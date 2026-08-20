@@ -477,6 +477,7 @@
   .auth-field { display:grid; gap:5px; color:var(--ink-2); font-size:11px; font-weight:700; }
   .auth-field input { width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; padding:11px 12px; color:var(--ink); font:13px inherit; outline:none; background:#fff; }
   .auth-field input:focus { border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft); }
+  .auth-code-input { letter-spacing: .34em; font-size: 18px !important; font-weight: 700; text-align:center; }
   .auth-field.hidden, .auth-consent.hidden { display:none; }
   .auth-consent { display:flex; align-items:flex-start; gap:7px; text-align:left; color:var(--ink-3); font-size:10.5px; line-height:1.55; }
   .auth-consent input { margin:2px 0 0; accent-color:var(--brand); }
@@ -732,11 +733,12 @@
         <label id="auth-email-wrap" class="auth-field"><span>邮箱</span><input id="auth-email" type="email" inputmode="email" autocomplete="email" required placeholder="name@example.com"/></label>
         <label id="auth-password-wrap" class="auth-field"><span id="auth-password-label">密码</span><input id="auth-password" type="password" minlength="8" maxlength="128" autocomplete="current-password" required placeholder="至少 8 位，包含字母和数字"/></label>
         <label id="auth-confirm-wrap" class="auth-field hidden"><span>确认密码</span><input id="auth-password-confirm" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="再次输入密码"/></label>
+        <label id="auth-code-wrap" class="auth-field hidden"><span>6 位邮箱验证码</span><input id="auth-code" class="auth-code-input" inputmode="numeric" autocomplete="one-time-code" pattern="\d{6}" maxlength="6" placeholder="请输入 6 位数字验证码"/></label>
         <label id="auth-policy-wrap" class="auth-consent hidden"><input id="email-privacy-check" type="checkbox"/><span>我已阅读并同意 <button type="button" class="auth-link" onclick="openPrivacyPolicy()">《隐私政策》</button>，同意为创建账号处理必要信息。</span></label>
         <div id="auth-form-error" class="auth-form-error" role="alert" aria-live="polite"></div>
         <button id="auth-submit" class="auth-btn email" type="submit">登录</button>
       </form>
-      <div id="auth-login-tools" class="auth-tools"><button type="button" class="auth-link" onclick="openForgotPassword()">忘记密码？</button><button id="auth-resend-btn" type="button" class="auth-link hidden" onclick="resendVerificationEmail()">重新发送验证邮件</button></div>
+      <div id="auth-login-tools" class="auth-tools"><button id="auth-forgot-btn" type="button" class="auth-link" onclick="openForgotPassword()">忘记密码？</button><button id="auth-resend-btn" type="button" class="auth-link hidden" onclick="resendVerificationEmail()">重新发送验证码</button></div>
       <button id="auth-back-btn" type="button" class="auth-back hidden" onclick="setAuthMode('login')">‹ 返回登录</button>
       <div class="auth-note" id="auth-note">账号密码经过加盐哈希后保存在服务端。不要使用与其他服务完全相同的密码。</div>
     </div>
@@ -1332,6 +1334,7 @@ const AUTH_CONFIG = {
   accountDeleteEndpoint: '/api/account',
   resendVerificationEndpoint: '/api/auth/resend-verification',
   forgotPasswordEndpoint: '/api/auth/forgot-password',
+  verifyEmailEndpoint: '/api/auth/verify-email',
   resetPasswordEndpoint: '/api/auth/reset-password',
   policyVersion: '2026-08-20',
 };
@@ -1597,7 +1600,7 @@ let appStarted = false;
 let privacyPolicyReviewing = false;
 let privacyReturnToAuth = false;
 let authMode = 'login';
-let pendingResetToken = '';
+let pendingAuthEmail = '';
 function getPrivacyConsent() { try { return JSON.parse(localStorage.getItem(PRIVACY_CONSENT_KEY) || 'null'); } catch (e) { return null; } }
 function hasPrivacyConsent() { const consent = getPrivacyConsent(); return Boolean(consent && consent.accepted && consent.version === PRIVACY_POLICY_VERSION); }
 function getPrivacyPreferences() { try { const saved = JSON.parse(localStorage.getItem(PRIVACY_PREFS_KEY) || '{}'); return { aiContentProcessing: Boolean(saved.aiContentProcessing) }; } catch (e) { return { aiContentProcessing: false }; } }
@@ -1629,75 +1632,90 @@ function applyUser() {
   const pl = $('profile-lv'); if (pl) pl.textContent = u ? (p ? p.role + ' · ' + p.years : '完成画像，定制成长内容') : '登录后保存你的成长身份';
   const li = $('auth-entry'); if (li) li.innerHTML = u ? '<span class="ico">🚪</span>退出登录<span class="arrow">›</span>' : '<span class="ico">🔐</span>邮箱登录 / 注册<span class="arrow">›</span>';
 }
-function openAuth(mode = 'login') { if (ensurePrivacyConsent()) { setAuthMode(mode); $('auth-overlay').classList.add('open'); setTimeout(() => (mode === 'reset' ? $('auth-password') : $('auth-email')).focus(), 180); } }
+function openAuth(mode = 'login') { if (ensurePrivacyConsent()) { setAuthMode(mode); $('auth-overlay').classList.add('open'); setTimeout(() => (mode === 'verify' || mode === 'reset' ? $('auth-code') : $('auth-email')).focus(), 180); } }
 function closeAuth() { $('auth-overlay').classList.remove('open'); clearAuthError(); }
 function onAuthClick() { if (currentUser()) logout(); else openAuth(); }
 function setAuthMode(mode, options = {}) {
-  authMode = ['register', 'forgot', 'reset'].includes(mode) ? mode : 'login';
-  const register = authMode === 'register', forgot = authMode === 'forgot', reset = authMode === 'reset';
+  authMode = ['register', 'verify', 'forgot', 'reset'].includes(mode) ? mode : 'login';
+  const register = authMode === 'register', verify = authMode === 'verify', forgot = authMode === 'forgot', reset = authMode === 'reset';
   const login = authMode === 'login';
+  if (options.email) pendingAuthEmail = options.email;
+  if ((verify || reset) && pendingAuthEmail) $('auth-email').value = pendingAuthEmail;
   $('auth-tab-login').classList.toggle('active', login); $('auth-tab-register').classList.toggle('active', register);
-  $('auth-tabs').classList.toggle('hidden', forgot || reset);
+  $('auth-tabs').classList.toggle('hidden', verify || forgot || reset);
   $('auth-name-wrap').classList.toggle('hidden', !register);
-  $('auth-email-wrap').classList.toggle('hidden', reset);
-  $('auth-password-wrap').classList.toggle('hidden', forgot);
+  $('auth-email-wrap').classList.remove('hidden');
+  $('auth-password-wrap').classList.toggle('hidden', forgot || verify);
   $('auth-confirm-wrap').classList.toggle('hidden', !(register || reset));
+  $('auth-code-wrap').classList.toggle('hidden', !(verify || reset));
   $('auth-policy-wrap').classList.toggle('hidden', !register);
   $('auth-display-name').disabled = !register;
-  $('auth-email').disabled = reset;
-  $('auth-password').disabled = forgot;
+  $('auth-email').disabled = verify || reset;
+  $('auth-password').disabled = forgot || verify;
   $('auth-password-confirm').disabled = !(register || reset);
-  $('auth-login-tools').classList.toggle('hidden', !login);
-  $('auth-back-btn').classList.toggle('hidden', !(forgot || reset));
-  $('auth-resend-btn').classList.toggle('hidden', !options.needsVerification);
-  $('auth-title').textContent = reset ? '设置新密码' : forgot ? '找回密码' : register ? '创建你的账号' : '欢迎来到拾光成长';
-  $('auth-subtitle').textContent = reset ? '设置一个新的登录密码' : forgot ? '输入已验证的邮箱，我们会发送重置链接' : register ? '验证邮箱后即可开始使用' : '用邮箱保存你的成长身份';
+  $('auth-code').disabled = !(verify || reset);
+  $('auth-login-tools').classList.toggle('hidden', !(login || verify));
+  $('auth-forgot-btn').classList.toggle('hidden', !login);
+  $('auth-back-btn').classList.toggle('hidden', !(verify || forgot || reset));
+  $('auth-resend-btn').classList.toggle('hidden', !(verify || options.needsVerification));
+  $('auth-title').textContent = reset ? '重置密码' : verify ? '验证你的邮箱' : forgot ? '找回密码' : register ? '创建你的账号' : '欢迎来到拾光成长';
+  $('auth-subtitle').textContent = reset ? '输入邮件中的验证码并设置新密码' : verify ? '请输入邮件中的 6 位数字验证码' : forgot ? '输入已验证的邮箱，我们会发送重置验证码' : register ? '创建账号后，我们会发送 6 位验证码' : '用邮箱保存你的成长身份';
   $('auth-password-label').textContent = reset ? '新密码' : '密码';
   $('auth-password').autocomplete = (register || reset) ? 'new-password' : 'current-password';
-  $('auth-submit').textContent = reset ? '保存新密码' : forgot ? '发送重置邮件' : register ? '创建账号并验证邮箱' : '登录';
+  $('auth-submit').textContent = reset ? '保存新密码' : verify ? '验证邮箱' : forgot ? '发送重置验证码' : register ? '创建账号并发送验证码' : '登录';
   const message = $('auth-flow-message');
   message.textContent = options.message || ''; message.classList.toggle('show', Boolean(options.message));
   clearAuthError();
 }
 function clearAuthError() { const el = $('auth-form-error'); if (el) { el.textContent = ''; el.classList.remove('show'); } }
-function showAuthError(message, needsVerification = false) { const el = $('auth-form-error'); if (el) { el.textContent = message; el.classList.add('show'); } $('auth-resend-btn').classList.toggle('hidden', !needsVerification || authMode !== 'login'); }
+function showAuthError(message, needsVerification = false) {
+  const el = $('auth-form-error'); if (el) { el.textContent = message; el.classList.add('show'); }
+  if (needsVerification && authMode === 'login') { $('auth-login-tools').classList.remove('hidden'); $('auth-resend-btn').classList.remove('hidden'); }
+}
 function openForgotPassword() { setAuthMode('forgot'); $('auth-email').focus(); }
 async function resendVerificationEmail() {
-  const email = $('auth-email').value.trim(); if (!email) { showAuthError('请先填写注册时使用的邮箱'); return; }
+  const email = (pendingAuthEmail || $('auth-email').value).trim(); if (!email) { showAuthError('请先填写注册时使用的邮箱'); return; }
   const button = $('auth-resend-btn'); button.disabled = true;
-  try { const res = await fetch(AUTH_CONFIG.resendVerificationEndpoint, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify({ email }) }); const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.error || '验证邮件暂时无法发送'); const message = $('auth-flow-message'); message.textContent = data.message || '验证邮件已发送，请检查邮箱'; message.classList.add('show'); }
-  catch (error) { showAuthError(error.message || '验证邮件暂时无法发送'); }
+  try {
+    const res = await fetch(AUTH_CONFIG.resendVerificationEndpoint, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify({ email }) });
+    const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.error || '验证码暂时无法发送');
+    pendingAuthEmail = email; setAuthMode('verify', { email, message:data.message || '验证码已发送，请检查邮箱' }); $('auth-code').focus();
+  } catch (error) { showAuthError(error.message || '验证码暂时无法发送'); }
   finally { button.disabled = false; }
 }
 async function submitEmailAuth(event) {
   event.preventDefault(); if (!ensurePrivacyConsent()) return;
-  const register = authMode === 'register', forgot = authMode === 'forgot', reset = authMode === 'reset';
-  const email = $('auth-email').value.trim(), password = $('auth-password').value, displayName = $('auth-display-name').value.trim(), confirm = $('auth-password-confirm').value;
+  const register = authMode === 'register', verify = authMode === 'verify', forgot = authMode === 'forgot', reset = authMode === 'reset';
+  const email = $('auth-email').value.trim(), password = $('auth-password').value, displayName = $('auth-display-name').value.trim(), confirm = $('auth-password-confirm').value, code = $('auth-code').value.trim();
   clearAuthError();
   if ((register || reset) && password !== confirm) return showAuthError('两次输入的密码不一致');
+  if ((verify || reset) && !/^\d{6}$/.test(code)) return showAuthError('请输入 6 位数字验证码');
   if (register && !$('email-privacy-check').checked) return showAuthError('请阅读并同意《隐私政策》');
-  const button = $('auth-submit'); button.disabled = true; button.textContent = reset ? '正在保存…' : forgot ? '正在发送…' : register ? '正在创建…' : '正在登录…';
+  const button = $('auth-submit'); button.disabled = true; button.textContent = reset ? '正在保存…' : verify ? '正在验证…' : forgot ? '正在发送…' : register ? '正在创建…' : '正在登录…';
   try {
     let endpoint = AUTH_CONFIG.loginEndpoint, payload = { email, password };
     if (register) { endpoint = AUTH_CONFIG.registerEndpoint; payload = { email, password, displayName, privacyAccepted:true, privacyPolicyVersion:PRIVACY_POLICY_VERSION }; }
+    if (verify) { endpoint = AUTH_CONFIG.verifyEmailEndpoint; payload = { email, code }; }
     if (forgot) { endpoint = AUTH_CONFIG.forgotPasswordEndpoint; payload = { email }; }
-    if (reset) { endpoint = AUTH_CONFIG.resetPasswordEndpoint; payload = { token: pendingResetToken, password }; }
+    if (reset) { endpoint = AUTH_CONFIG.resetPasswordEndpoint; payload = { email, code, password }; }
     const res = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body:JSON.stringify(payload) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { showAuthError(data.error || '操作失败，请稍后重试', Boolean(data.needsVerification)); return; }
-    if (register && data.verificationRequired) { setAuthMode('login', { message:data.message || '验证邮件已发送，请验证后登录' }); $('auth-email').value = email; return; }
-    if (forgot) { setAuthMode('login', { message:data.message || '如账号存在，重置邮件已发送' }); $('auth-email').value = email; return; }
-    if (reset) { pendingResetToken = ''; history.replaceState({}, document.title, location.pathname); setAuthMode('login', { message:data.message || '密码已重置，请使用新密码登录' }); return; }
+    if (register && data.verificationRequired) { pendingAuthEmail = email; $('auth-code').value = ''; setAuthMode('verify', { email, message:data.message || '验证码已发送，请输入邮件中的 6 位数字' }); $('auth-code').focus(); return; }
+    if (verify) { pendingAuthEmail = ''; $('auth-code').value = ''; setAuthMode('login', { message:data.message || '邮箱验证成功，请登录' }); $('auth-email').value = email; return; }
+    if (forgot) { pendingAuthEmail = email; $('auth-code').value = ''; setAuthMode('reset', { email, message:data.message || '如账号存在，重置验证码已发送' }); $('auth-code').focus(); return; }
+    if (reset) { pendingAuthEmail = ''; $('auth-code').value = ''; setAuthMode('login', { message:data.message || '密码已重置，请使用新密码登录' }); $('auth-email').value = email; return; }
     setCurrentUser(data.user); closeAuth(); applyUser(); if (!getProfile()) openOnboarding(); toast('登录成功，欢迎回来 👋');
   } catch (error) { showAuthError(error.message || '操作失败，请稍后重试'); }
-  finally { button.disabled = false; button.textContent = reset ? '保存新密码' : forgot ? '发送重置邮件' : register ? '创建账号并验证邮箱' : '登录'; }
+  finally { button.disabled = false; button.textContent = authMode === 'reset' ? '保存新密码' : authMode === 'verify' ? '验证邮箱' : authMode === 'forgot' ? '发送重置验证码' : authMode === 'register' ? '创建账号并发送验证码' : '登录'; }
 }
 function handleEmailActionFromUrl() {
   const params = new URLSearchParams(location.search);
   if (params.get('email_verified') === '1') { history.replaceState({}, document.title, location.pathname); setTimeout(() => toast('邮箱验证成功，请登录'), 0); return false; }
-  const token = params.get('reset_token');
-  if (!token) return false;
-  pendingResetToken = token; history.replaceState({}, document.title, location.pathname); openAuth('reset'); setAuthMode('reset'); return true;
+  if (!params.get('reset_token')) return false;
+  history.replaceState({}, document.title, location.pathname);
+  setTimeout(() => { openAuth('forgot'); setAuthMode('forgot', { message:'重置链接已更新为邮箱验证码，请重新获取验证码。' }); }, 0);
+  return true;
 }
 async function restoreSession() { try { const res = await fetch(AUTH_CONFIG.sessionEndpoint, { credentials:'same-origin' }); if (!res.ok) { clearUser(); applyUser(); return false; } const data = await res.json(); if (data.user) setCurrentUser(data.user); else clearUser(); applyUser(); return Boolean(data.user); } catch (e) { return Boolean(currentUser()); } }
 async function logout() { try { await fetch(AUTH_CONFIG.logoutEndpoint, { method:'POST', credentials:'same-origin' }); } catch (e) {} clearUser(); applyUser(); toast('已退出登录'); }

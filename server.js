@@ -40,11 +40,14 @@ const SMTP_USER = (process.env.SMTP_USER || '').trim();
 const SMTP_PASS = (process.env.SMTP_PASS || '').trim();
 const SMTP_FROM = (process.env.SMTP_FROM || SMTP_USER).trim();
 const APP_BASE_URL = (process.env.APP_BASE_URL || '').trim().replace(/\/$/, '');
-const EMAIL_VERIFY_TTL_MINUTES = clampInt(process.env.EMAIL_VERIFY_TTL_MINUTES, 5, 10080, 1440);
-const PASSWORD_RESET_TTL_MINUTES = clampInt(process.env.PASSWORD_RESET_TTL_MINUTES, 5, 1440, 30);
+const EMAIL_VERIFY_TTL_MINUTES = clampInt(process.env.EMAIL_VERIFY_TTL_MINUTES, 5, 60, 10);
+const PASSWORD_RESET_TTL_MINUTES = clampInt(process.env.PASSWORD_RESET_TTL_MINUTES, 5, 60, 10);
 const EMAIL_SEND_RATE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_SEND_RATE_MAX = 3;
+const EMAIL_CODE_VERIFY_WINDOW_MS = 15 * 60 * 1000;
+const EMAIL_CODE_VERIFY_MAX = 8;
 const emailSendAttempts = new Map();
+const emailCodeVerificationAttempts = new Map();
 const SMTP_STREAM_TRANSPORT = /^(1|true|yes)$/i.test(process.env.SMTP_STREAM_TRANSPORT || 'false');
 const ROOT = __dirname;
 
@@ -213,7 +216,8 @@ function publicBaseUrl(req) {
 function tokenHash(purpose, token) {
   return crypto.createHmac('sha256', AUTH_SECRET).update(`${purpose}:${token}`).digest('hex');
 }
-function newEmailToken() { return crypto.randomBytes(32).toString('base64url'); }
+function newEmailCode() { return String(crypto.randomInt(0, 1000000)).padStart(6, '0'); }
+function normalizeEmailCode(value) { const code = String(value || '').trim(); return /^[0-9]{6}$/.test(code) ? code : ''; }
 function tokenRecord(purpose, token, ttlMinutes) {
   return { tokenHash: tokenHash(purpose, token), expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(), sentAt: new Date().toISOString() };
 }
@@ -232,13 +236,21 @@ function recordEmailAttempt(key) {
   const now = Date.now(); const attempts = (emailSendAttempts.get(key) || []).filter(time => now - time < EMAIL_SEND_RATE_WINDOW_MS);
   attempts.push(now); emailSendAttempts.set(key, attempts);
 }
-async function sendVerificationEmail(req, user, token) {
-  const url = `${publicBaseUrl(req)}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
-  await getMailer().sendMail({ from: SMTP_FROM, to: user.email, subject: '请验证你的拾光成长邮箱', text: `你好，${user.displayName}。请在 ${EMAIL_VERIFY_TTL_MINUTES} 分钟内打开以下链接验证邮箱：${url}`, html: `<p>你好，${htmlEscape(user.displayName)}：</p><p>请在 ${EMAIL_VERIFY_TTL_MINUTES} 分钟内点击链接验证你的拾光成长邮箱：</p><p><a href="${htmlEscape(url)}">验证邮箱</a></p><p>如果不是你本人注册，请忽略此邮件。</p>` });
+function codeVerificationKey(req, purpose, email) { return `${getClientIp(req)}:${purpose}:${email || '-'}`; }
+function isCodeVerificationRateLimited(key) {
+  const now = Date.now(); const attempts = (emailCodeVerificationAttempts.get(key) || []).filter(time => now - time < EMAIL_CODE_VERIFY_WINDOW_MS);
+  emailCodeVerificationAttempts.set(key, attempts); return attempts.length >= EMAIL_CODE_VERIFY_MAX;
 }
-async function sendPasswordResetEmail(req, user, token) {
-  const url = `${publicBaseUrl(req)}/?reset_token=${encodeURIComponent(token)}`;
-  await getMailer().sendMail({ from: SMTP_FROM, to: user.email, subject: '重置你的拾光成长密码', text: `你好，${user.displayName}。请在 ${PASSWORD_RESET_TTL_MINUTES} 分钟内打开以下链接设置新密码：${url}`, html: `<p>你好，${htmlEscape(user.displayName)}：</p><p>请在 ${PASSWORD_RESET_TTL_MINUTES} 分钟内点击链接设置新密码：</p><p><a href="${htmlEscape(url)}">重置密码</a></p><p>如果不是你本人发起，请忽略此邮件；你的密码不会因此改变。</p>` });
+function recordCodeVerificationAttempt(key) {
+  const now = Date.now(); const attempts = (emailCodeVerificationAttempts.get(key) || []).filter(time => now - time < EMAIL_CODE_VERIFY_WINDOW_MS);
+  attempts.push(now); emailCodeVerificationAttempts.set(key, attempts);
+}
+function clearCodeVerificationAttempts(key) { emailCodeVerificationAttempts.delete(key); }
+async function sendVerificationEmail(user, code) {
+  await getMailer().sendMail({ from: SMTP_FROM, to: user.email, subject: '拾光成长邮箱验证码', text: `你好，${user.displayName}。你的拾光成长邮箱验证码是：${code}。验证码将在 ${EMAIL_VERIFY_TTL_MINUTES} 分钟后失效，请勿向他人透露。`, html: `<p>你好，${htmlEscape(user.displayName)}：</p><p>你的拾光成长邮箱验证码是：</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${htmlEscape(code)}</p><p>验证码将在 ${EMAIL_VERIFY_TTL_MINUTES} 分钟后失效，请勿向他人透露。</p><p>如果不是你本人注册，请忽略此邮件。</p>` });
+}
+async function sendPasswordResetEmail(user, code) {
+  await getMailer().sendMail({ from: SMTP_FROM, to: user.email, subject: '拾光成长重置密码验证码', text: `你好，${user.displayName}。你的密码重置验证码是：${code}。验证码将在 ${PASSWORD_RESET_TTL_MINUTES} 分钟后失效，请勿向他人透露。`, html: `<p>你好，${htmlEscape(user.displayName)}：</p><p>你的密码重置验证码是：</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${htmlEscape(code)}</p><p>验证码将在 ${PASSWORD_RESET_TTL_MINUTES} 分钟后失效，请勿向他人透露。</p><p>如果不是你本人发起，请忽略此邮件；你的密码不会因此改变。</p>` });
 }
 function redirect(res, location) {
   res.writeHead(302, { Location: location, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
@@ -668,26 +680,31 @@ const server = http.createServer(async (req, res) => {
       if (!isMailerConfigured()) return json(res, 503, { error: '邮箱服务暂未配置，请稍后重试' }, origin);
       const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const passwordError = validatePassword(body.password); const emailKey = emailRateLimitKey(req, 'register', email);
       if (!email) return json(res, 400, { error: '请输入有效的邮箱地址' }, origin);
-      if (isEmailRateLimited(emailKey)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
       if (passwordError) return json(res, 400, { error: passwordError }, origin);
       if (body.privacyAccepted !== true || body.privacyPolicyVersion !== PRIVACY_POLICY_VERSION) return json(res, 400, { error: '请阅读并同意当前版本的隐私政策' }, origin);
+      if (isEmailRateLimited(emailKey)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
       const store = readStore();
-      if (store.users.some(user => user.email === email)) return json(res, 409, { error: '该邮箱已注册，请直接登录或重新发送验证邮件' }, origin);
-      const now = new Date().toISOString(), token = newEmailToken();
-      const user = { id: crypto.randomUUID(), email, displayName: normalizeDisplayName(body.displayName, email.split('@')[0]), passwordHash: hashPassword(String(body.password)), createdAt: now, updatedAt: now, sessionVersion: 1, emailVerifiedAt: null, emailVerification: tokenRecord('verify', token, EMAIL_VERIFY_TTL_MINUTES), passwordReset: null, privacyConsent: { version: PRIVACY_POLICY_VERSION, acceptedAt: now } };
+      if (store.users.some(user => user.email === email)) return json(res, 409, { error: '该邮箱已注册，请直接登录或重新发送验证码' }, origin);
+      const now = new Date().toISOString(), code = newEmailCode();
+      const user = { id: crypto.randomUUID(), email, displayName: normalizeDisplayName(body.displayName, email.split('@')[0]), passwordHash: hashPassword(String(body.password)), createdAt: now, updatedAt: now, sessionVersion: 1, emailVerifiedAt: null, emailVerification: tokenRecord('verify', code, EMAIL_VERIFY_TTL_MINUTES), passwordReset: null, privacyConsent: { version: PRIVACY_POLICY_VERSION, acceptedAt: now } };
       store.users.push(user); writeStore(store);
-      await sendVerificationEmail(req, user, token); recordEmailAttempt(emailKey);
-      return json(res, 202, { verificationRequired: true, message: '验证邮件已发送，请打开邮箱完成验证后登录' }, origin);
-    } catch (error) { console.error('[Auth] registration email failed:', error.message); return json(res, 503, { error: '验证邮件发送失败，请检查邮箱服务后重试' }, origin); }
+      await sendVerificationEmail(user, code); recordEmailAttempt(emailKey);
+      return json(res, 202, { verificationRequired: true, verificationMethod: 'code', message: '验证码已发送，请输入邮件中的 6 位数字完成验证' }, origin);
+    } catch (error) { console.error('[Auth] registration email failed:', error.message); return json(res, 503, { error: '验证码发送失败，请检查邮箱服务后重试' }, origin); }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/verify-email') {
+    try {
+      const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const code = normalizeEmailCode(body.code); const key = codeVerificationKey(req, 'verify', email);
+      if (!email || !code) return json(res, 400, { error: '请输入邮箱和 6 位验证码' }, origin);
+      if (isCodeVerificationRateLimited(key)) return json(res, 429, { error: '验证码尝试次数过多，请 15 分钟后再试' }, origin);
+      const store = readStore(), user = store.users.find(item => item.email === email);
+      if (!user || user.emailVerifiedAt || !hasUsableToken(user.emailVerification, 'verify', code)) { recordCodeVerificationAttempt(key); return json(res, 400, { error: '验证码无效或已过期，请重新获取' }, origin); }
+      user.emailVerifiedAt = new Date().toISOString(); user.emailVerification = null; user.updatedAt = user.emailVerifiedAt; writeStore(store); clearCodeVerificationAttempts(key);
+      return json(res, 200, { ok: true, message: '邮箱验证成功，请使用账号密码登录' }, origin);
+    } catch (error) { console.error('[Auth] verification failed:', error.message); return json(res, 503, { error: '暂时无法验证邮箱，请稍后重试' }, origin); }
   }
   if (req.method === 'GET' && pathname === '/api/auth/verify-email') {
-    try {
-      const token = requestUrl.searchParams.get('token') || ''; const store = readStore();
-      const user = store.users.find(item => !item.emailVerifiedAt && hasUsableToken(item.emailVerification, 'verify', token));
-      if (!user) return html(res, 400, emailActionPage('验证链接无效', '链接可能已过期、已被使用，或不完整。请返回登录页重新发送验证邮件。'));
-      user.emailVerifiedAt = new Date().toISOString(); user.emailVerification = null; user.updatedAt = user.emailVerifiedAt; writeStore(store);
-      return redirect(res, `${publicBaseUrl(req)}/?email_verified=1`);
-    } catch (error) { console.error('[Auth] verification failed:', error.message); return html(res, 503, emailActionPage('暂时无法验证邮箱', '服务暂时不可用，请稍后重试。')); }
+    return html(res, 410, emailActionPage('验证方式已更新', '请返回拾光成长登录页面，输入邮件中的 6 位验证码完成验证。'));
   }
   if (req.method === 'POST' && pathname === '/api/auth/resend-verification') {
     try {
@@ -696,9 +713,9 @@ const server = http.createServer(async (req, res) => {
       if (!email) return json(res, 400, { error: '请输入有效的邮箱地址' }, origin);
       if (isEmailRateLimited(key)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
       const store = readStore(), user = store.users.find(item => item.email === email);
-      if (user && !user.emailVerifiedAt) { const token = newEmailToken(); user.emailVerification = tokenRecord('verify', token, EMAIL_VERIFY_TTL_MINUTES); user.updatedAt = new Date().toISOString(); writeStore(store); await sendVerificationEmail(req, user, token); recordEmailAttempt(key); }
-      return json(res, 200, { ok: true, message: '如该邮箱存在未验证账号，验证邮件已发送' }, origin);
-    } catch (error) { console.error('[Auth] resend verification failed:', error.message); return json(res, 503, { error: '验证邮件暂时无法发送，请稍后重试' }, origin); }
+      if (user && !user.emailVerifiedAt) { const code = newEmailCode(); user.emailVerification = tokenRecord('verify', code, EMAIL_VERIFY_TTL_MINUTES); user.updatedAt = new Date().toISOString(); writeStore(store); await sendVerificationEmail(user, code); recordEmailAttempt(key); }
+      return json(res, 200, { ok: true, verificationRequired: true, verificationMethod: 'code', message: '如该邮箱存在未验证账号，验证码已发送' }, origin);
+    } catch (error) { console.error('[Auth] resend verification failed:', error.message); return json(res, 503, { error: '验证码暂时无法发送，请稍后重试' }, origin); }
   }
   if (req.method === 'POST' && pathname === '/api/auth/forgot-password') {
     try {
@@ -707,18 +724,19 @@ const server = http.createServer(async (req, res) => {
       if (!email) return json(res, 400, { error: '请输入有效的邮箱地址' }, origin);
       if (isEmailRateLimited(key)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
       const store = readStore(), user = store.users.find(item => item.email === email);
-      if (user && user.emailVerifiedAt) { const token = newEmailToken(); user.passwordReset = tokenRecord('reset', token, PASSWORD_RESET_TTL_MINUTES); user.updatedAt = new Date().toISOString(); writeStore(store); await sendPasswordResetEmail(req, user, token); recordEmailAttempt(key); }
-      return json(res, 200, { ok: true, message: '如果该邮箱已注册且完成验证，重置邮件已发送' }, origin);
-    } catch (error) { console.error('[Auth] reset request failed:', error.message); return json(res, 503, { error: '重置邮件暂时无法发送，请稍后重试' }, origin); }
+      if (user && user.emailVerifiedAt) { const code = newEmailCode(); user.passwordReset = tokenRecord('reset', code, PASSWORD_RESET_TTL_MINUTES); user.updatedAt = new Date().toISOString(); writeStore(store); await sendPasswordResetEmail(user, code); recordEmailAttempt(key); }
+      return json(res, 200, { ok: true, resetRequired: true, resetMethod: 'code', message: '如该邮箱已注册且完成验证，重置验证码已发送' }, origin);
+    } catch (error) { console.error('[Auth] reset request failed:', error.message); return json(res, 503, { error: '重置验证码暂时无法发送，请稍后重试' }, origin); }
   }
   if (req.method === 'POST' && pathname === '/api/auth/reset-password') {
     try {
-      const body = JSON.parse(await readBody(req) || '{}'), token = typeof body.token === 'string' ? body.token : '', passwordError = validatePassword(body.password);
-      if (!token || token.length > 256) return json(res, 400, { error: '重置链接无效或不完整' }, origin);
+      const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const code = normalizeEmailCode(body.code); const passwordError = validatePassword(body.password); const key = codeVerificationKey(req, 'reset', email);
+      if (!email || !code) return json(res, 400, { error: '请输入邮箱和 6 位验证码' }, origin);
       if (passwordError) return json(res, 400, { error: passwordError }, origin);
-      const store = readStore(), user = store.users.find(item => hasUsableToken(item.passwordReset, 'reset', token));
-      if (!user) return json(res, 400, { error: '重置链接无效或已过期，请重新申请' }, origin);
-      user.passwordHash = hashPassword(String(body.password)); user.passwordReset = null; user.sessionVersion = (user.sessionVersion || 1) + 1; user.updatedAt = new Date().toISOString(); writeStore(store);
+      if (isCodeVerificationRateLimited(key)) return json(res, 429, { error: '验证码尝试次数过多，请 15 分钟后再试' }, origin);
+      const store = readStore(), user = store.users.find(item => item.email === email && item.emailVerifiedAt && hasUsableToken(item.passwordReset, 'reset', code));
+      if (!user) { recordCodeVerificationAttempt(key); return json(res, 400, { error: '验证码无效或已过期，请重新获取' }, origin); }
+      user.passwordHash = hashPassword(String(body.password)); user.passwordReset = null; user.sessionVersion = (user.sessionVersion || 1) + 1; user.updatedAt = new Date().toISOString(); writeStore(store); clearCodeVerificationAttempts(key);
       return json(res, 200, { ok: true, message: '密码已重置，请使用新密码登录' }, origin, { 'Set-Cookie': clearSessionCookie() });
     } catch (error) { console.error('[Auth] password reset failed:', error.message); return json(res, 500, { error: '密码重置暂时不可用，请稍后重试' }, origin); }
   }

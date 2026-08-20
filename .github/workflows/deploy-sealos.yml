@@ -130,8 +130,8 @@ jobs:
             SMTP_PASS="$SMTP_PASS" \
             SMTP_FROM="$SMTP_FROM" \
             APP_BASE_URL="$APP_URL" \
-            EMAIL_VERIFY_TTL_MINUTES=1440 \
-            PASSWORD_RESET_TTL_MINUTES=30
+            EMAIL_VERIFY_TTL_MINUTES=10 \
+            PASSWORD_RESET_TTL_MINUTES=10
 
       - name: Roll out the new image
         shell: bash

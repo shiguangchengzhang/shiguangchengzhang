@@ -164,9 +164,9 @@ spec:
             - name: APP_BASE_URL
               value: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
             - name: EMAIL_VERIFY_TTL_MINUTES
-              value: '1440'
+              value: '10'
             - name: PASSWORD_RESET_TTL_MINUTES
-              value: '30'
+              value: '10'
             - name: AI_BASE_URL
               value: ${{ inputs.AI_BASE_URL }}
             - name: AI_MODEL
