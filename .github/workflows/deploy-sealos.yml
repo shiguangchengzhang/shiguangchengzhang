@@ -68,6 +68,36 @@ jobs:
           test "$(kubectl --insecure-skip-tls-verify config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = "$SEALOS_NAMESPACE"
           echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
 
+      - name: Configure email authentication environment
+        shell: bash
+        env:
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: |
+          set -euo pipefail
+          test -n "$AUTH_SECRET"
+          test -n "$SMTP_USER"
+          test -n "$SMTP_PASS"
+          test -n "$SMTP_FROM"
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            set env deployment/"$SEALOS_DEPLOYMENT" \
+            AUTH_SECRET="$AUTH_SECRET" \
+            AUTH_DATA_FILE=/app/data/users.json \
+            AUTH_COOKIE_SECURE=true \
+            AUTH_SESSION_DAYS=14 \
+            PRIVACY_POLICY_VERSION=2026-08-20 \
+            SMTP_HOST=smtp.qq.com \
+            SMTP_PORT=465 \
+            SMTP_SECURE=true \
+            SMTP_USER="$SMTP_USER" \
+            SMTP_PASS="$SMTP_PASS" \
+            SMTP_FROM="$SMTP_FROM" \
+            APP_BASE_URL="$APP_URL" \
+            EMAIL_VERIFY_TTL_MINUTES=1440 \
+            PASSWORD_RESET_TTL_MINUTES=30
+
       - name: Roll out the new image
         shell: bash
         run: |

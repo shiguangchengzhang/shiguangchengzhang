@@ -1,15 +1,16 @@
-FROM node:22.17.1-slim AS runtime
+﻿FROM node:22.17.1-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8787 \
-    HOST=0.0.0.0
+    HOST=0.0.0.0 \
+    AUTH_DATA_FILE=/app/data/users.json
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev && npm cache clean --force
 
 COPY server.js index.html ./
-
 RUN useradd --system --uid 10001 --create-home appuser \
+    && mkdir -p /app/data \
     && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8787
