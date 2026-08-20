@@ -134,6 +134,119 @@ async function callProvider(message) {
   } finally { clearTimeout(timer); }
 }
 
+/* ---- 沟通实战陪练：系统提示词 + 归一化 + 调用 ---- */
+const COACH_SCENARIO_MAX = 200;
+
+const COACH_PLAY_PROMPT = scenario => `你是「拾光成长」App 的沟通实战陪练。你要扮演下面方向里的「对方」，和用户进行一轮职场沟通对话，训练用户的社交沟通与领导沟通能力。
+
+用户想提升的沟通方向：${scenario}
+
+规则：
+1. 你扮演「对方」（可能是领导、同事、下属、跨部门等），用符合该身份的中文口语语气说话。
+2. 每一轮，先用「content」字段说一段推进剧情的话（回应或施压：质疑、提出新要求、表达情绪等）。
+3. 再用「options」字段给出 3 个用户可选的回应方式，让用户像做选择题一样选。3 个选项水平要有区分：一个好（结构化、有边界、能共情）、一个一般、一个有不足（情绪化、回避、越界），但选项本身不要标注好坏。
+4. 只输出一个 JSON 对象，不要任何多余文字，字段如下：
+{"content":"对方说的话","options":["回应选项一","回应选项二","回应选项三"]}`;
+
+const COACH_EVAL_PROMPT = scenario => `你是「拾光成长」App 的沟通教练。下面是用户在「${scenario}」方向上与 AI 陪练的完整对话，用户每轮从给定选项中选择了一个回应。请评估用户在「社交沟通」与「领导沟通」两方面的能力，指出不足并给出改进方案。
+
+只输出一个 JSON 对象，不要任何多余文字，字段如下：
+{
+  "overview":"总体评价（2-3 句，指出最突出的问题和最亮眼的表现）",
+  "social":{"score":78,"strengths":["亮点1"],"weaknesses":["不足1","不足2"]},
+  "leadership":{"score":82,"strengths":["亮点1"],"weaknesses":["不足1"]},
+  "improvements":["可执行的改进方案1","改进方案2","改进方案3"]
+}
+
+要求：score 为 0-100 整数；strengths 与 weaknesses 各 1-3 条；improvements 3 条。所有评价必须结合对话历史里用户的具体选择，具体、可执行，不要泛泛而谈。`;
+
+function coachHistoryToText(messages, scenario) {
+  const lines = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'assistant' && m.content) lines.push('对方：' + m.content);
+    else if (m.role === 'user' && m.content) lines.push('用户：' + m.content);
+  }
+  return '方向：' + scenario + '\n' + lines.join('\n');
+}
+
+function coachParseJson(content) {
+  if (content && typeof content === 'object') return content;
+  if (typeof content !== 'string') return null;
+  const clean = content.trim();
+  if (!clean) return null;
+  try { return JSON.parse(clean); } catch (_) {}
+  const match = clean.match(/\{[\s\S]*\}/);
+  if (match) { try { return JSON.parse(match[0]); } catch (_) {} }
+  return null;
+}
+
+function coachToArr(value) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (value == null || value === '') return [];
+  return [String(value)];
+}
+
+function coachClampScore(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
+function normalizeCoachStep(value) {
+  if (!value || typeof value !== 'object') return null;
+  const content = String(value.content || value['对方'] || '').trim();
+  let options = Array.isArray(value.options) ? value.options : (Array.isArray(value['选项']) ? value['选项'] : []);
+  options = options.map(String).filter(Boolean).slice(0, 4);
+  if (!content && options.length === 0) return null;
+  return { content, options: options.length ? options : ['好的，我明白了。', '我需要再想想。', '我们再商量一下。'] };
+}
+
+function normalizeCoachReport(value) {
+  if (!value || typeof value !== 'object') return null;
+  const social = value.social || value['社交沟通'] || {};
+  const leadership = value.leadership || value['领导沟通'] || {};
+  const overview = String(value.overview || value['总体评价'] || '').trim();
+  return {
+    overview,
+    social: {
+      score: coachClampScore(social.score ?? social['评分']),
+      strengths: coachToArr(social.strengths ?? social['亮点']).slice(0, 3),
+      weaknesses: coachToArr(social.weaknesses ?? social['不足']).slice(0, 3),
+    },
+    leadership: {
+      score: coachClampScore(leadership.score ?? leadership['评分']),
+      strengths: coachToArr(leadership.strengths ?? leadership['亮点']).slice(0, 3),
+      weaknesses: coachToArr(leadership.weaknesses ?? leadership['不足']).slice(0, 3),
+    },
+    improvements: coachToArr(value.improvements ?? value['改进方案']).slice(0, 5),
+  };
+}
+
+async function callCoachProvider(systemPrompt, userText) {
+  if (!AI_API_KEY) throw new Error('AI_API_KEY is not configured');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  try {
+    const response = await fetch(AI_BASE_URL + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_API_KEY}` },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        temperature: 0.8,
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
+        response_format: { type: 'json_object' }
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`provider returned ${response.status}`);
+    const data = await response.json();
+    const parsed = coachParseJson(extractProviderContent(data));
+    if (!parsed) throw new Error('provider returned empty reply');
+    return parsed;
+  } finally { clearTimeout(timer); }
+}
+
 function parseMultipart(req) {
   return new Promise((resolve, reject) => {
     const contentType = req.headers['content-type'] || '';
@@ -368,6 +481,29 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       console.error('[AI] request failed:', error.message);
       return json(res, error.message === 'AI_API_KEY is not configured' ? 503 : 502, { error: 'AI service temporarily unavailable' }, origin);
+    }
+  }
+  if (req.method === 'POST' && req.url === '/api/ai/coach') {
+    try {
+      const payload = JSON.parse(await readBody(req) || '{}');
+      const scenario = String(payload.scenario || '').trim().slice(0, COACH_SCENARIO_MAX);
+      const action = payload.action === 'evaluate' ? 'evaluate' : 'play';
+      const messages = Array.isArray(payload.messages) ? payload.messages.slice(-20) : [];
+      if (!scenario) return json(res, 400, { error: 'scenario is required' }, origin);
+      const historyText = coachHistoryToText(messages, scenario);
+      if (action === 'evaluate') {
+        const report = normalizeCoachReport(await callCoachProvider(COACH_EVAL_PROMPT(scenario), historyText + '\n\n请基于以上对话，输出评估报告 JSON。'));
+        if (!report) throw new Error('provider returned empty report');
+        return json(res, 200, { ok: true, report, meta: { source: 'provider', model: safeModelName } }, origin);
+      }
+      const step = normalizeCoachStep(await callCoachProvider(COACH_PLAY_PROMPT(scenario), historyText + '\n\n请继续，输出下一轮的 content 和 options。'));
+      if (!step) throw new Error('provider returned empty step');
+      const round = messages.filter(m => m && m.role === 'user').length + 1;
+      return json(res, 200, { ok: true, step: { ...step, round }, meta: { source: 'provider', model: safeModelName } }, origin);
+    } catch (error) {
+      console.error('[Coach] request failed:', error.message);
+      const status = error.message === 'AI_API_KEY is not configured' ? 503 : 502;
+      return json(res, status, { error: 'AI service temporarily unavailable' }, origin);
     }
   }
   if (req.method === 'POST' && req.url === '/api/ai/speech-score') {
