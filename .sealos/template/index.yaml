@@ -1,0 +1,214 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: shiguangchengzhang-ai
+spec:
+  title: 拾光成长 AI
+  url: https://hub.docker.com/r/hhnhhw/shiguangchengzhang
+  author: project-owner
+  description: 拾光成长职场成长助手，提供 AI 对话与讯飞语音评分服务。
+  icon: https://cdn.jsdelivr.net/gh/labring-actions/templates@main/template/nodejs/logo.png
+  templateType: inline
+  defaults:
+    app_name:
+      type: string
+      value: shiguangchengzhang-${{ random(8) }}
+    app_host:
+      type: string
+      value: shiguangchengzhang-${{ random(8) }}
+  inputs:
+    AI_BASE_URL:
+      description: AI 兼容接口基础地址
+      type: string
+      default: https://shapi.vip/v1
+      required: true
+    AI_MODEL:
+      description: AI 模型名称
+      type: string
+      default: MiniMax-M3-福利
+      required: true
+    AI_API_KEY:
+      description: AI 服务 API Key（敏感）
+      type: string
+      default: ''
+      required: true
+    AI_TEMPERATURE:
+      description: AI 温度参数
+      type: string
+      default: '0.7'
+      required: false
+    AI_TIMEOUT_MS:
+      description: AI 请求超时时间（毫秒）
+      type: string
+      default: '20000'
+      required: false
+    IFLYTEK_APP_ID:
+      description: 讯飞 APP ID（敏感）
+      type: string
+      default: ''
+      required: true
+    IFLYTEK_API_KEY:
+      description: 讯飞 API Key（敏感）
+      type: string
+      default: ''
+      required: true
+    IFLYTEK_API_SECRET:
+      description: 讯飞 API Secret（敏感）
+      type: string
+      default: ''
+      required: true
+    IFLYTEK_TIMEOUT_MS:
+      description: 讯飞请求超时时间（毫秒）
+      type: string
+      default: '45000'
+      required: false
+    MAX_AUDIO_BYTES:
+      description: 最大音频大小（字节）
+      type: string
+      default: '10485760'
+      required: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: hhnhhw/shiguangchengzhang:20260310
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    app: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: hhnhhw/shiguangchengzhang:20260310
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: '8787'
+            - name: CORS_ORIGINS
+              value: ''
+            - name: AI_BASE_URL
+              value: ${{ inputs.AI_BASE_URL }}
+            - name: AI_MODEL
+              value: ${{ inputs.AI_MODEL }}
+            - name: AI_API_KEY
+              value: ${{ inputs.AI_API_KEY }}
+            - name: AI_TEMPERATURE
+              value: ${{ inputs.AI_TEMPERATURE }}
+            - name: AI_TIMEOUT_MS
+              value: ${{ inputs.AI_TIMEOUT_MS }}
+            - name: IFLYTEK_APP_ID
+              value: ${{ inputs.IFLYTEK_APP_ID }}
+            - name: IFLYTEK_API_KEY
+              value: ${{ inputs.IFLYTEK_API_KEY }}
+            - name: IFLYTEK_API_SECRET
+              value: ${{ inputs.IFLYTEK_API_SECRET }}
+            - name: IFLYTEK_TIMEOUT_MS
+              value: ${{ inputs.IFLYTEK_TIMEOUT_MS }}
+            - name: MAX_AUDIO_BYTES
+              value: ${{ inputs.MAX_AUDIO_BYTES }}
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8787
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8787
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    app: ${{ defaults.app_name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: ${{ defaults.app_name }}
+  ports:
+    - name: http
+      port: 8787
+      targetPort: 8787
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: 'true'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-body-size: 16m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '120'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '120'
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 8787
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+---
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: https://cdn.jsdelivr.net/gh/labring-actions/templates@main/template/nodejs/logo.png
+  name: 拾光成长 AI
+  type: link

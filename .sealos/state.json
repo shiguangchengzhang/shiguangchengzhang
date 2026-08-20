@@ -1,0 +1,59 @@
+{
+  "version": "1.0",
+  "last_deploy": {
+    "app_name": "shiguangchengzhang-ouwyqxcl",
+    "app_host": "shiguangchengzhang-fxaethpl",
+    "namespace": "ns-8zpzccfm",
+    "region": "sealosbja.site",
+    "image": "hhnhhw/shiguangchengzhang:20260310",
+    "docker_hub_user": "hhnhhw",
+    "repo_name": "shiguangchengzhang-ai",
+    "url": "https://shiguangchengzhang-fxaethpl.sealosbja.site",
+    "deployed_at": "2026-08-20T03:57:29Z",
+    "last_updated_at": "2026-08-20T04:06:43Z"
+  },
+  "runtime_truth": {
+    "status": "verified",
+    "captured_at": "2026-08-20T04:06:43Z",
+    "identity": {
+      "app_name": "shiguangchengzhang-ouwyqxcl",
+      "namespace": "ns-8zpzccfm",
+      "image": "hhnhhw/shiguangchengzhang:20260310",
+      "url": "https://shiguangchengzhang-fxaethpl.sealosbja.site"
+    },
+    "evidence_paths": [
+      ".sealos/template/index.yaml",
+      ".sealos/beijing-runtime-baseline.json",
+      "~/.sealos/logs/migrate-20260820-115728.log"
+    ],
+    "redaction_status": "complete",
+    "stability_window_seconds": 72,
+    "checks": [
+      "Old US Instance/App/Deployment/Service/Ingress/Pod resources removed",
+      "Beijing Launchpad public network and port 8787 matched",
+      "GET / returned 200 with expected page title",
+      "GET /api/health returned 200 and configured=true",
+      "Deployment 1/1, Pod Running/Ready, restartCount=0",
+      "Final log/event scan passed with no active failures"
+    ]
+  },
+  "provenance": {
+    "source": "sealos-deploy-migration",
+    "owner": "sealos-deploy",
+    "artifact_paths": [
+      ".sealos/template/index.yaml",
+      ".sealos/beijing-runtime-baseline.json"
+    ],
+    "redaction_status": "complete"
+  },
+  "history": [
+    {
+      "at": "2026-08-20T03:57:29Z",
+      "action": "deploy",
+      "image": "hhnhhw/shiguangchengzhang:20260310",
+      "method": "template-api",
+      "status": "success",
+      "note": "Deployed to Beijing region workspace ns-8zpzccfm after removing the US deployment."
+    }
+  ]
+}

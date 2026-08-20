@@ -1,0 +1,10 @@
+{
+  "port": 8787,
+  "node_version": "22.17.1",
+  "start_command": "node server.js",
+  "base_image": "node:22.17.1-slim",
+  "env_overrides": {
+    "NODE_ENV": "production",
+    "HOST": "0.0.0.0"
+  }
+}

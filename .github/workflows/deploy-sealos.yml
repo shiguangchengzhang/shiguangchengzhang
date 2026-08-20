@@ -1,0 +1,97 @@
+name: Deploy to Sealos
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sealos-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: hhnhhw/shiguangchengzhang
+  SEALOS_NAMESPACE: ns-8zpzccfm
+  SEALOS_DEPLOYMENT: shiguangchengzhang-ouwyqxcl
+  SEALOS_CONTAINER: shiguangchengzhang-ouwyqxcl
+  APP_URL: https://shiguangchengzhang-fxaethpl.sealosbja.site
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Configure Sealos kubeconfig
+        shell: bash
+        env:
+          SEALOS_KUBECONFIG_B64: ${{ secrets.SEALOS_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$SEALOS_KUBECONFIG_B64"
+          mkdir -p "$RUNNER_TEMP/sealos"
+          printf '%s' "$SEALOS_KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/sealos/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/sealos/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Roll out the new image
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            set image deployment/"$SEALOS_DEPLOYMENT" \
+            "$SEALOS_CONTAINER"="$IMAGE_NAME:$GITHUB_SHA"
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            rollout status deployment/"$SEALOS_DEPLOYMENT" --timeout=180s
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            get deployment/"$SEALOS_DEPLOYMENT" \
+            -o jsonpath='{.status.readyReplicas}/{.status.replicas}'
+          echo
+
+      - name: Verify the public app
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            code=$(curl --silent --show-error --output /tmp/health.json --write-out '%{http_code}' "$APP_URL/api/health" || true)
+            if [ "$code" = "200" ] && grep -q '"ok":true' /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Health check failed" >&2
+          cat /tmp/health.json 2>/dev/null || true
+          exit 1

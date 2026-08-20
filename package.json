@@ -1,0 +1,15 @@
+{
+  "name": "shiguangchengzhang-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "拾光成长安全 AI 代理服务",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "fast-xml-parser": "^5.11.0",
+    "ws": "^8.21.3"
+  }
+}
