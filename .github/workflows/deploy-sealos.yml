@@ -94,6 +94,15 @@ jobs:
           echo "SEALOS_CONTAINER=$container" >> "$GITHUB_ENV"
           echo "Discovered $kind/$workload container $container"
 
+      - name: Ensure persistent auth volume is writable
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The image runs without root as UID/GID 10001. A newly mounted PVC is
+          # commonly root-owned, so attach fsGroup 10001 before writing users.json.
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            patch "$SEALOS_KIND/$SEALOS_WORKLOAD" --type=merge \
+            -p '{"spec":{"template":{"spec":{"securityContext":{"runAsUser":10001,"runAsGroup":10001,"fsGroup":10001,"fsGroupChangePolicy":"OnRootMismatch"}}}}}'
       - name: Configure email authentication environment
         shell: bash
         env:

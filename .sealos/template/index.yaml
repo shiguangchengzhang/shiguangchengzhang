@@ -121,6 +121,11 @@ spec:
         app: ${{ defaults.app_name }}
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: ${{ defaults.app_name }}
           image: hhnhhw/shiguangchengzhang:20260310
