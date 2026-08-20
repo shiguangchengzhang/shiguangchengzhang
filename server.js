@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const Busboy = require('busboy');
 const WebSocket = require('ws');
 const { XMLParser } = require('fast-xml-parser');
+const nodemailer = require('nodemailer');
 
 loadEnvFile(path.join(__dirname, '.env'));
 
@@ -23,13 +24,45 @@ const IFLYTEK_TIMEOUT_MS = Number(process.env.IFLYTEK_TIMEOUT_MS || 45000);
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 10 * 1024 * 1024);
 const safeModelName = AI_MODEL.slice(0, 80).replace(/[\r\n<>]/g, '');
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+const AUTH_DATA_FILE = path.resolve(process.env.AUTH_DATA_FILE || path.join(__dirname, 'data', 'users.json'));
+const AUTH_SECRET = process.env.AUTH_SECRET || (process.env.NODE_ENV === 'production' ? '' : crypto.randomBytes(48).toString('base64url'));
+const AUTH_COOKIE_NAME = process.env.AUTH_COOKIE_NAME || 'sg_session';
+const AUTH_SESSION_DAYS = clampInt(process.env.AUTH_SESSION_DAYS, 1, 90, 14);
+const AUTH_COOKIE_SECURE = /^(1|true|yes)$/i.test(process.env.AUTH_COOKIE_SECURE || (process.env.NODE_ENV === 'production' ? 'true' : 'false'));
+const PRIVACY_POLICY_VERSION = process.env.PRIVACY_POLICY_VERSION || '2026-08-20';
+const LOGIN_RATE_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_RATE_MAX = 8;
+const loginAttempts = new Map();
+const SMTP_HOST = (process.env.SMTP_HOST || '').trim();
+const SMTP_PORT = clampInt(process.env.SMTP_PORT, 1, 65535, 465);
+const SMTP_SECURE = /^(1|true|yes)$/i.test(process.env.SMTP_SECURE || 'true');
+const SMTP_USER = (process.env.SMTP_USER || '').trim();
+const SMTP_PASS = (process.env.SMTP_PASS || '').trim();
+const SMTP_FROM = (process.env.SMTP_FROM || SMTP_USER).trim();
+const APP_BASE_URL = (process.env.APP_BASE_URL || '').trim().replace(/\/$/, '');
+const EMAIL_VERIFY_TTL_MINUTES = clampInt(process.env.EMAIL_VERIFY_TTL_MINUTES, 5, 10080, 1440);
+const PASSWORD_RESET_TTL_MINUTES = clampInt(process.env.PASSWORD_RESET_TTL_MINUTES, 5, 1440, 30);
+const EMAIL_SEND_RATE_WINDOW_MS = 15 * 60 * 1000;
+const EMAIL_SEND_RATE_MAX = 3;
+const emailSendAttempts = new Map();
+const SMTP_STREAM_TRANSPORT = /^(1|true|yes)$/i.test(process.env.SMTP_STREAM_TRANSPORT || 'false');
 const ROOT = __dirname;
+
+if (!AUTH_SECRET) {
+  console.error('AUTH_SECRET must be configured when NODE_ENV=production');
+  process.exit(1);
+}
 
 const SYSTEM_PROMPT = `你是「拾光成长」App 的职场成长助手，服务于 22-40 岁职场人。
 针对用户的问题，用中文、口语化、可直接执行的方式回复。
 只输出一个 JSON 对象，不要任何多余文字，字段如下：
 {"point":"核心观点（一句话点破本质）","script":"话术模板（可直接说出口的一句话，用「」括起来）","avoid":"避坑提醒（一句话）"}
 如果问题与职场无关，也尽量引导回职场成长场景。`;
+
+function clampInt(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= min && number <= max ? number : fallback;
+}
 
 function loadEnvFile(file) {
   if (!fs.existsSync(file)) return;
@@ -40,16 +73,17 @@ function loadEnvFile(file) {
   }
 }
 
-function json(res, status, body, origin) {
-  const allowOrigin = origin && (CORS_ORIGINS.length === 0 || CORS_ORIGINS.includes(origin)) ? origin : '';
+function json(res, status, body, origin, extraHeaders = {}) {
+  const allowOrigin = origin && CORS_ORIGINS.includes(origin) ? origin : '';
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin, Vary: 'Origin' } : {})
+    'X-Content-Type-Options': 'nosniff',
+    ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin, 'Access-Control-Allow-Credentials': 'true', Vary: 'Origin' } : {}),
+    ...extraHeaders
   });
   res.end(JSON.stringify(body));
 }
-
 function readBody(req, maxBytes = 256 * 1024) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -62,6 +96,160 @@ function readBody(req, maxBytes = 256 * 1024) {
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+}
+
+function normalizeEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,63}$/.test(email) && email.length <= 254 ? email : '';
+}
+function normalizeDisplayName(value, fallback) {
+  const name = String(value || '').replace(/[\r\n<>]/g, '').trim();
+  return (name || fallback).slice(0, 32);
+}
+function validatePassword(value) {
+  const password = String(value || '');
+  if (password.length < 8 || password.length > 128) return '密码应为 8–128 个字符';
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) return '密码需同时包含字母和数字';
+  return '';
+}
+function getClientIp(req) { return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0, 128); }
+function rateLimitKey(req, email) { return `${getClientIp(req)}:${email || '-'}`; }
+function isRateLimited(key) {
+  const now = Date.now();
+  const attempts = (loginAttempts.get(key) || []).filter(time => now - time < LOGIN_RATE_WINDOW_MS);
+  loginAttempts.set(key, attempts);
+  return attempts.length >= LOGIN_RATE_MAX;
+}
+function recordFailedAttempt(key) {
+  const now = Date.now();
+  const attempts = (loginAttempts.get(key) || []).filter(time => now - time < LOGIN_RATE_WINDOW_MS);
+  attempts.push(now); loginAttempts.set(key, attempts);
+}
+function clearFailedAttempts(key) { loginAttempts.delete(key); }
+function readStore() {
+  try {
+    if (!fs.existsSync(AUTH_DATA_FILE)) return { users: [] };
+    const parsed = JSON.parse(fs.readFileSync(AUTH_DATA_FILE, 'utf8'));
+    return parsed && Array.isArray(parsed.users) ? parsed : { users: [] };
+  } catch (error) { console.error('[Auth] unable to read user store:', error.message); throw new Error('user store unavailable'); }
+}
+function writeStore(store) {
+  const directory = path.dirname(AUTH_DATA_FILE);
+  fs.mkdirSync(directory, { recursive: true });
+  const temp = `${AUTH_DATA_FILE}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(store, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temp, AUTH_DATA_FILE);
+}
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('base64url');
+  return `scrypt$${salt}$${crypto.scryptSync(password, salt, 64).toString('base64url')}`;
+}
+function verifyPassword(password, stored) {
+  const [algorithm, salt, expected] = String(stored || '').split('$');
+  if (algorithm !== 'scrypt' || !salt || !expected) return false;
+  const actual = crypto.scryptSync(password, salt, 64).toString('base64url');
+  const a = Buffer.from(actual), b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function signToken(payload) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${encoded}.${crypto.createHmac('sha256', AUTH_SECRET).update(encoded).digest('base64url')}`;
+}
+function verifyToken(token) {
+  const [encoded, signature] = String(token || '').split('.');
+  if (!encoded || !signature) return null;
+  const expected = crypto.createHmac('sha256', AUTH_SECRET).update(encoded).digest();
+  const received = Buffer.from(signature, 'base64url');
+  if (expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) return null;
+  try { const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); return payload && payload.exp > Math.floor(Date.now() / 1000) ? payload : null; } catch (_) { return null; }
+}
+function parseCookies(header) {
+  return String(header || '').split(';').reduce((out, item) => { const i = item.indexOf('='); if (i > 0) out[item.slice(0, i).trim()] = decodeURIComponent(item.slice(i + 1).trim()); return out; }, {});
+}
+function sessionCookie(token) {
+  const attrs = [`${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${AUTH_SESSION_DAYS * 86400}`];
+  if (AUTH_COOKIE_SECURE) attrs.push('Secure'); return attrs.join('; ');
+}
+function clearSessionCookie() {
+  const attrs = [`${AUTH_COOKIE_NAME}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  if (AUTH_COOKIE_SECURE) attrs.push('Secure'); return attrs.join('; ');
+}
+function toPublicUser(user) {
+  return { id: user.id, email: user.email, nick: user.displayName, avatar: user.displayName.charAt(0).toUpperCase(), provider: 'email', createdAt: user.createdAt };
+}
+function createSession(user) {
+  const now = Math.floor(Date.now() / 1000);
+  return signToken({ sub: user.id, ver: user.sessionVersion || 1, iat: now, exp: now + AUTH_SESSION_DAYS * 86400 });
+}
+function currentSessionUser(req) {
+  const token = parseCookies(req.headers.cookie)[AUTH_COOKIE_NAME];
+  const payload = verifyToken(token);
+  if (!payload || !payload.sub) return null;
+  return readStore().users.find(item => item.id === payload.sub && item.sessionVersion === payload.ver) || null;
+}
+
+function isMailerConfigured() {
+  return SMTP_STREAM_TRANSPORT || Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS && SMTP_FROM);
+}
+let mailer;
+function getMailer() {
+  if (!isMailerConfigured()) throw new Error('SMTP is not configured');
+  if (!mailer) {
+    mailer = SMTP_STREAM_TRANSPORT
+      ? nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' })
+      : nodemailer.createTransport({ host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_SECURE, auth: { user: SMTP_USER, pass: SMTP_PASS } });
+  }
+  return mailer;
+}
+function htmlEscape(value) {
+  return String(value || '').replace(/[&<>'"]/g, character => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' })[character]);
+}
+function publicBaseUrl(req) {
+  if (APP_BASE_URL) return APP_BASE_URL;
+  const host = String(req.headers.host || '').replace(/[\r\n]/g, '');
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  return `${forwardedProto === 'https' ? 'https' : 'http'}://${host}`;
+}
+function tokenHash(purpose, token) {
+  return crypto.createHmac('sha256', AUTH_SECRET).update(`${purpose}:${token}`).digest('hex');
+}
+function newEmailToken() { return crypto.randomBytes(32).toString('base64url'); }
+function tokenRecord(purpose, token, ttlMinutes) {
+  return { tokenHash: tokenHash(purpose, token), expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(), sentAt: new Date().toISOString() };
+}
+function hasUsableToken(record, purpose, token) {
+  if (!record || !record.tokenHash || !record.expiresAt || Date.parse(record.expiresAt) < Date.now()) return false;
+  const expected = Buffer.from(record.tokenHash, 'hex');
+  const received = Buffer.from(tokenHash(purpose, token), 'hex');
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
+}
+function emailRateLimitKey(req, purpose, email) { return `${getClientIp(req)}:${purpose}:${email || '-'}`; }
+function isEmailRateLimited(key) {
+  const now = Date.now(); const attempts = (emailSendAttempts.get(key) || []).filter(time => now - time < EMAIL_SEND_RATE_WINDOW_MS);
+  emailSendAttempts.set(key, attempts); return attempts.length >= EMAIL_SEND_RATE_MAX;
+}
+function recordEmailAttempt(key) {
+  const now = Date.now(); const attempts = (emailSendAttempts.get(key) || []).filter(time => now - time < EMAIL_SEND_RATE_WINDOW_MS);
+  attempts.push(now); emailSendAttempts.set(key, attempts);
+}
+async function sendVerificationEmail(req, user, token) {
+  const url = `${publicBaseUrl(req)}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+  await getMailer().sendMail({ from: SMTP_FROM, to: user.email, subject: '请验证你的拾光成长邮箱', text: `你好，${user.displayName}。请在 ${EMAIL_VERIFY_TTL_MINUTES} 分钟内打开以下链接验证邮箱：${url}`, html: `<p>你好，${htmlEscape(user.displayName)}：</p><p>请在 ${EMAIL_VERIFY_TTL_MINUTES} 分钟内点击链接验证你的拾光成长邮箱：</p><p><a href="${htmlEscape(url)}">验证邮箱</a></p><p>如果不是你本人注册，请忽略此邮件。</p>` });
+}
+async function sendPasswordResetEmail(req, user, token) {
+  const url = `${publicBaseUrl(req)}/?reset_token=${encodeURIComponent(token)}`;
+  await getMailer().sendMail({ from: SMTP_FROM, to: user.email, subject: '重置你的拾光成长密码', text: `你好，${user.displayName}。请在 ${PASSWORD_RESET_TTL_MINUTES} 分钟内打开以下链接设置新密码：${url}`, html: `<p>你好，${htmlEscape(user.displayName)}：</p><p>请在 ${PASSWORD_RESET_TTL_MINUTES} 分钟内点击链接设置新密码：</p><p><a href="${htmlEscape(url)}">重置密码</a></p><p>如果不是你本人发起，请忽略此邮件；你的密码不会因此改变。</p>` });
+}
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+  res.end();
+}
+function emailActionPage(title, message) {
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${htmlEscape(title)}</title><body style="margin:0;background:#f5f6fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1a1d21"><main style="max-width:480px;margin:12vh auto;padding:32px;background:#fff;border-radius:18px;box-shadow:0 12px 35px rgba(20,24,40,.12);text-align:center"><div style="font-size:42px">🌅</div><h1 style="font-size:22px">${htmlEscape(title)}</h1><p style="line-height:1.7;color:#59606b">${htmlEscape(message)}</p><a href="/" style="display:inline-block;margin-top:12px;background:#2a78d6;color:#fff;padding:11px 18px;border-radius:10px;text-decoration:none;font-weight:700">返回拾光成长</a></main></body></html>`;
+}
+function html(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
+  res.end(body);
 }
 
 function normalizeReply(value) {
@@ -131,6 +319,119 @@ async function callProvider(message) {
     const reply = parseModelReply(content);
     if (!reply) throw new Error('provider returned empty reply');
     return reply;
+  } finally { clearTimeout(timer); }
+}
+
+/* ---- 沟通实战陪练：系统提示词 + 归一化 + 调用 ---- */
+const COACH_SCENARIO_MAX = 200;
+
+const COACH_PLAY_PROMPT = scenario => `你是「拾光成长」App 的沟通实战陪练。你要扮演下面方向里的「对方」，和用户进行一轮职场沟通对话，训练用户的社交沟通与领导沟通能力。
+
+用户想提升的沟通方向：${scenario}
+
+规则：
+1. 你扮演「对方」（可能是领导、同事、下属、跨部门等），用符合该身份的中文口语语气说话。
+2. 每一轮，先用「content」字段说一段推进剧情的话（回应或施压：质疑、提出新要求、表达情绪等）。
+3. 再用「options」字段给出 3 个用户可选的回应方式，让用户像做选择题一样选。3 个选项水平要有区分：一个好（结构化、有边界、能共情）、一个一般、一个有不足（情绪化、回避、越界），但选项本身不要标注好坏。
+4. 只输出一个 JSON 对象，不要任何多余文字，字段如下：
+{"content":"对方说的话","options":["回应选项一","回应选项二","回应选项三"]}`;
+
+const COACH_EVAL_PROMPT = scenario => `你是「拾光成长」App 的沟通教练。下面是用户在「${scenario}」方向上与 AI 陪练的完整对话，用户每轮从给定选项中选择了一个回应。请评估用户在「社交沟通」与「领导沟通」两方面的能力，指出不足并给出改进方案。
+
+只输出一个 JSON 对象，不要任何多余文字，字段如下：
+{
+  "overview":"总体评价（2-3 句，指出最突出的问题和最亮眼的表现）",
+  "social":{"score":78,"strengths":["亮点1"],"weaknesses":["不足1","不足2"]},
+  "leadership":{"score":82,"strengths":["亮点1"],"weaknesses":["不足1"]},
+  "improvements":["可执行的改进方案1","改进方案2","改进方案3"]
+}
+
+要求：score 为 0-100 整数；strengths 与 weaknesses 各 1-3 条；improvements 3 条。所有评价必须结合对话历史里用户的具体选择，具体、可执行，不要泛泛而谈。`;
+
+function coachHistoryToText(messages, scenario) {
+  const lines = [];
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'assistant' && m.content) lines.push('对方：' + m.content);
+    else if (m.role === 'user' && m.content) lines.push('用户：' + m.content);
+  }
+  return '方向：' + scenario + '\n' + lines.join('\n');
+}
+
+function coachParseJson(content) {
+  if (content && typeof content === 'object') return content;
+  if (typeof content !== 'string') return null;
+  const clean = content.trim();
+  if (!clean) return null;
+  try { return JSON.parse(clean); } catch (_) {}
+  const match = clean.match(/\{[\s\S]*\}/);
+  if (match) { try { return JSON.parse(match[0]); } catch (_) {} }
+  return null;
+}
+
+function coachToArr(value) {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (value == null || value === '') return [];
+  return [String(value)];
+}
+
+function coachClampScore(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
+function normalizeCoachStep(value) {
+  if (!value || typeof value !== 'object') return null;
+  const content = String(value.content || value['对方'] || '').trim();
+  let options = Array.isArray(value.options) ? value.options : (Array.isArray(value['选项']) ? value['选项'] : []);
+  options = options.map(String).filter(Boolean).slice(0, 4);
+  if (!content && options.length === 0) return null;
+  return { content, options: options.length ? options : ['好的，我明白了。', '我需要再想想。', '我们再商量一下。'] };
+}
+
+function normalizeCoachReport(value) {
+  if (!value || typeof value !== 'object') return null;
+  const social = value.social || value['社交沟通'] || {};
+  const leadership = value.leadership || value['领导沟通'] || {};
+  const overview = String(value.overview || value['总体评价'] || '').trim();
+  return {
+    overview,
+    social: {
+      score: coachClampScore(social.score ?? social['评分']),
+      strengths: coachToArr(social.strengths ?? social['亮点']).slice(0, 3),
+      weaknesses: coachToArr(social.weaknesses ?? social['不足']).slice(0, 3),
+    },
+    leadership: {
+      score: coachClampScore(leadership.score ?? leadership['评分']),
+      strengths: coachToArr(leadership.strengths ?? leadership['亮点']).slice(0, 3),
+      weaknesses: coachToArr(leadership.weaknesses ?? leadership['不足']).slice(0, 3),
+    },
+    improvements: coachToArr(value.improvements ?? value['改进方案']).slice(0, 5),
+  };
+}
+
+async function callCoachProvider(systemPrompt, userText) {
+  if (!AI_API_KEY) throw new Error('AI_API_KEY is not configured');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  try {
+    const response = await fetch(AI_BASE_URL + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AI_API_KEY}` },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        temperature: 0.8,
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
+        response_format: { type: 'json_object' }
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`provider returned ${response.status}`);
+    const data = await response.json();
+    const parsed = coachParseJson(extractProviderContent(data));
+    if (!parsed) throw new Error('provider returned empty reply');
+    return parsed;
   } finally { clearTimeout(timer); }
 }
 
@@ -344,21 +645,113 @@ function serveStatic(req, res) {
   const file = path.resolve(ROOT, '.' + requested);
   if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return json(res, 404, { error: 'not found' }, req.headers.origin);
   const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
-  res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+  res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin' });
   fs.createReadStream(file).pipe(res);
 }
 
 const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || '';
+  let requestUrl;
+  try { requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`); }
+  catch (_) { return json(res, 400, { error: 'invalid url' }, origin); }
+  const pathname = requestUrl.pathname;
   if (req.method === 'OPTIONS') {
-    const allowed = !origin || CORS_ORIGINS.length === 0 || CORS_ORIGINS.includes(origin);
-    res.writeHead(allowed ? 204 : 403, allowed ? { 'Access-Control-Allow-Origin': origin || '*', 'Access-Control-Allow-Methods': 'POST, GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' } : {});
+    const allowed = !origin || CORS_ORIGINS.includes(origin);
+    res.writeHead(allowed ? 204 : 403, allowed ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' } : {});
     return res.end();
   }
-  if (req.method === 'GET' && req.url === '/api/health') {
-    return json(res, 200, { ok: true, configured: Boolean(AI_API_KEY), speechConfigured: Boolean(IFLYTEK_APP_ID && IFLYTEK_API_KEY && IFLYTEK_API_SECRET), model: AI_MODEL }, origin);
+  if (req.method === 'GET' && pathname === '/api/health') {
+    return json(res, 200, { ok: true, configured: Boolean(AI_API_KEY), speechConfigured: Boolean(IFLYTEK_APP_ID && IFLYTEK_API_KEY && IFLYTEK_API_SECRET), emailConfigured: isMailerConfigured(), emailLogin: true, privacyPolicyVersion: PRIVACY_POLICY_VERSION, model: AI_MODEL }, origin);
   }
-  if (req.method === 'POST' && req.url === '/api/ai/chat') {
+  if (req.method === 'POST' && pathname === '/api/auth/register') {
+    try {
+      if (!isMailerConfigured()) return json(res, 503, { error: '邮箱服务暂未配置，请稍后重试' }, origin);
+      const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const passwordError = validatePassword(body.password); const emailKey = emailRateLimitKey(req, 'register', email);
+      if (!email) return json(res, 400, { error: '请输入有效的邮箱地址' }, origin);
+      if (isEmailRateLimited(emailKey)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
+      if (passwordError) return json(res, 400, { error: passwordError }, origin);
+      if (body.privacyAccepted !== true || body.privacyPolicyVersion !== PRIVACY_POLICY_VERSION) return json(res, 400, { error: '请阅读并同意当前版本的隐私政策' }, origin);
+      const store = readStore();
+      if (store.users.some(user => user.email === email)) return json(res, 409, { error: '该邮箱已注册，请直接登录或重新发送验证邮件' }, origin);
+      const now = new Date().toISOString(), token = newEmailToken();
+      const user = { id: crypto.randomUUID(), email, displayName: normalizeDisplayName(body.displayName, email.split('@')[0]), passwordHash: hashPassword(String(body.password)), createdAt: now, updatedAt: now, sessionVersion: 1, emailVerifiedAt: null, emailVerification: tokenRecord('verify', token, EMAIL_VERIFY_TTL_MINUTES), passwordReset: null, privacyConsent: { version: PRIVACY_POLICY_VERSION, acceptedAt: now } };
+      store.users.push(user); writeStore(store);
+      await sendVerificationEmail(req, user, token); recordEmailAttempt(emailKey);
+      return json(res, 202, { verificationRequired: true, message: '验证邮件已发送，请打开邮箱完成验证后登录' }, origin);
+    } catch (error) { console.error('[Auth] registration email failed:', error.message); return json(res, 503, { error: '验证邮件发送失败，请检查邮箱服务后重试' }, origin); }
+  }
+  if (req.method === 'GET' && pathname === '/api/auth/verify-email') {
+    try {
+      const token = requestUrl.searchParams.get('token') || ''; const store = readStore();
+      const user = store.users.find(item => !item.emailVerifiedAt && hasUsableToken(item.emailVerification, 'verify', token));
+      if (!user) return html(res, 400, emailActionPage('验证链接无效', '链接可能已过期、已被使用，或不完整。请返回登录页重新发送验证邮件。'));
+      user.emailVerifiedAt = new Date().toISOString(); user.emailVerification = null; user.updatedAt = user.emailVerifiedAt; writeStore(store);
+      return redirect(res, `${publicBaseUrl(req)}/?email_verified=1`);
+    } catch (error) { console.error('[Auth] verification failed:', error.message); return html(res, 503, emailActionPage('暂时无法验证邮箱', '服务暂时不可用，请稍后重试。')); }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/resend-verification') {
+    try {
+      if (!isMailerConfigured()) return json(res, 503, { error: '邮箱服务暂未配置，请稍后重试' }, origin);
+      const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const key = emailRateLimitKey(req, 'verify', email);
+      if (!email) return json(res, 400, { error: '请输入有效的邮箱地址' }, origin);
+      if (isEmailRateLimited(key)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
+      const store = readStore(), user = store.users.find(item => item.email === email);
+      if (user && !user.emailVerifiedAt) { const token = newEmailToken(); user.emailVerification = tokenRecord('verify', token, EMAIL_VERIFY_TTL_MINUTES); user.updatedAt = new Date().toISOString(); writeStore(store); await sendVerificationEmail(req, user, token); recordEmailAttempt(key); }
+      return json(res, 200, { ok: true, message: '如该邮箱存在未验证账号，验证邮件已发送' }, origin);
+    } catch (error) { console.error('[Auth] resend verification failed:', error.message); return json(res, 503, { error: '验证邮件暂时无法发送，请稍后重试' }, origin); }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/forgot-password') {
+    try {
+      if (!isMailerConfigured()) return json(res, 503, { error: '邮箱服务暂未配置，请稍后重试' }, origin);
+      const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const key = emailRateLimitKey(req, 'reset', email);
+      if (!email) return json(res, 400, { error: '请输入有效的邮箱地址' }, origin);
+      if (isEmailRateLimited(key)) return json(res, 429, { error: '发送次数过多，请 15 分钟后再试' }, origin);
+      const store = readStore(), user = store.users.find(item => item.email === email);
+      if (user && user.emailVerifiedAt) { const token = newEmailToken(); user.passwordReset = tokenRecord('reset', token, PASSWORD_RESET_TTL_MINUTES); user.updatedAt = new Date().toISOString(); writeStore(store); await sendPasswordResetEmail(req, user, token); recordEmailAttempt(key); }
+      return json(res, 200, { ok: true, message: '如果该邮箱已注册且完成验证，重置邮件已发送' }, origin);
+    } catch (error) { console.error('[Auth] reset request failed:', error.message); return json(res, 503, { error: '重置邮件暂时无法发送，请稍后重试' }, origin); }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/reset-password') {
+    try {
+      const body = JSON.parse(await readBody(req) || '{}'), token = typeof body.token === 'string' ? body.token : '', passwordError = validatePassword(body.password);
+      if (!token || token.length > 256) return json(res, 400, { error: '重置链接无效或不完整' }, origin);
+      if (passwordError) return json(res, 400, { error: passwordError }, origin);
+      const store = readStore(), user = store.users.find(item => hasUsableToken(item.passwordReset, 'reset', token));
+      if (!user) return json(res, 400, { error: '重置链接无效或已过期，请重新申请' }, origin);
+      user.passwordHash = hashPassword(String(body.password)); user.passwordReset = null; user.sessionVersion = (user.sessionVersion || 1) + 1; user.updatedAt = new Date().toISOString(); writeStore(store);
+      return json(res, 200, { ok: true, message: '密码已重置，请使用新密码登录' }, origin, { 'Set-Cookie': clearSessionCookie() });
+    } catch (error) { console.error('[Auth] password reset failed:', error.message); return json(res, 500, { error: '密码重置暂时不可用，请稍后重试' }, origin); }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/login') {
+    try {
+      const body = JSON.parse(await readBody(req) || '{}'); const email = normalizeEmail(body.email); const key = rateLimitKey(req, email);
+      if (!email || typeof body.password !== 'string') return json(res, 400, { error: '请输入邮箱和密码' }, origin);
+      if (isRateLimited(key)) return json(res, 429, { error: '尝试次数过多，请 15 分钟后再试' }, origin);
+      const user = readStore().users.find(item => item.email === email);
+      if (!user || !verifyPassword(body.password, user.passwordHash)) { recordFailedAttempt(key); return json(res, 401, { error: '邮箱或密码不正确' }, origin); }
+      if (!user.emailVerifiedAt) return json(res, 403, { error: '请先完成邮箱验证后再登录', needsVerification: true }, origin);
+      clearFailedAttempts(key); return json(res, 200, { user: toPublicUser(user) }, origin, { 'Set-Cookie': sessionCookie(createSession(user)) });
+    } catch (error) { console.error('[Auth] login failed:', error.message); return json(res, 500, { error: '账号服务暂时不可用，请稍后重试' }, origin); }
+  }
+  if (req.method === 'GET' && pathname === '/api/auth/session') {
+    try { const user = currentSessionUser(req); return json(res, 200, { user: user ? toPublicUser(user) : null }, origin); }
+    catch (error) { console.error('[Auth] session failed:', error.message); return json(res, 500, { error: '账号服务暂时不可用，请稍后重试' }, origin); }
+  }
+  if (req.method === 'POST' && pathname === '/api/auth/logout') return json(res, 200, { ok: true }, origin, { 'Set-Cookie': clearSessionCookie() });
+  if (req.method === 'GET' && pathname === '/api/account/export') {
+    try { const user = currentSessionUser(req); if (!user) return json(res, 401, { error: '请先登录' }, origin); return json(res, 200, { exportedAt: new Date().toISOString(), account: { ...toPublicUser(user), privacyConsent: user.privacyConsent || null }, notice: '当前成长记录仍存储在你的浏览器，请同时使用“导出本机数据”。' }, origin); }
+    catch (error) { console.error('[Auth] export failed:', error.message); return json(res, 500, { error: '账号服务暂时不可用，请稍后重试' }, origin); }
+  }
+  if (req.method === 'DELETE' && pathname === '/api/account') {
+    try {
+      const user = currentSessionUser(req); const body = JSON.parse(await readBody(req) || '{}');
+      if (!user) return json(res, 401, { error: '请先登录' }, origin);
+      if (normalizeEmail(body.confirmEmail) !== user.email) return json(res, 400, { error: '请填写当前账号邮箱以确认删除' }, origin);
+      const store = readStore(); store.users = store.users.filter(item => item.id !== user.id); writeStore(store);
+      return json(res, 200, { ok: true }, origin, { 'Set-Cookie': clearSessionCookie() });
+    } catch (error) { console.error('[Auth] deletion failed:', error.message); return json(res, 500, { error: '账号服务暂时不可用，请稍后重试' }, origin); }
+  }
+  if (req.method === 'POST' && pathname === '/api/ai/chat') {
     try {
       const payload = JSON.parse(await readBody(req) || '{}');
       const message = typeof payload.message === 'string' ? payload.message.trim() : '';
@@ -370,7 +763,30 @@ const server = http.createServer(async (req, res) => {
       return json(res, error.message === 'AI_API_KEY is not configured' ? 503 : 502, { error: 'AI service temporarily unavailable' }, origin);
     }
   }
-  if (req.method === 'POST' && req.url === '/api/ai/speech-score') {
+  if (req.method === 'POST' && pathname === '/api/ai/coach') {
+    try {
+      const payload = JSON.parse(await readBody(req) || '{}');
+      const scenario = String(payload.scenario || '').trim().slice(0, COACH_SCENARIO_MAX);
+      const action = payload.action === 'evaluate' ? 'evaluate' : 'play';
+      const messages = Array.isArray(payload.messages) ? payload.messages.slice(-20) : [];
+      if (!scenario) return json(res, 400, { error: 'scenario is required' }, origin);
+      const historyText = coachHistoryToText(messages, scenario);
+      if (action === 'evaluate') {
+        const report = normalizeCoachReport(await callCoachProvider(COACH_EVAL_PROMPT(scenario), historyText + '\n\n请基于以上对话，输出评估报告 JSON。'));
+        if (!report) throw new Error('provider returned empty report');
+        return json(res, 200, { ok: true, report, meta: { source: 'provider', model: safeModelName } }, origin);
+      }
+      const step = normalizeCoachStep(await callCoachProvider(COACH_PLAY_PROMPT(scenario), historyText + '\n\n请继续，输出下一轮的 content 和 options。'));
+      if (!step) throw new Error('provider returned empty step');
+      const round = messages.filter(m => m && m.role === 'user').length + 1;
+      return json(res, 200, { ok: true, step: { ...step, round }, meta: { source: 'provider', model: safeModelName } }, origin);
+    } catch (error) {
+      console.error('[Coach] request failed:', error.message);
+      const status = error.message === 'AI_API_KEY is not configured' ? 503 : 502;
+      return json(res, status, { error: 'AI service temporarily unavailable' }, origin);
+    }
+  }
+  if (req.method === 'POST' && pathname === '/api/ai/speech-score') {
     try {
       const form = await parseMultipart(req);
       const targetText = String(form.fields.targetText || '').trim();

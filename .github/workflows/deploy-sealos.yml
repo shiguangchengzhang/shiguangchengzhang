@@ -67,29 +67,74 @@ jobs:
           test "$(kubectl --insecure-skip-tls-verify config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = "$SEALOS_NAMESPACE"
           echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
 
-      - name: Roll out the new image
+      - name: Discover current Sealos workload
         shell: bash
         run: |
           set -euo pipefail
           selector="cloud.sealos.io/app-deploy-manager=$SEALOS_APP"
-          kind=""
-          workload=""
-          if workload=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get statefulset -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) && [ -n "$workload" ]; then
+          statefulset=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get statefulset -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          deployment=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployment -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -n "$statefulset" ] && [ -n "$deployment" ]; then
+            echo "Both StatefulSet and Deployment match $selector; refusing ambiguous rollout." >&2
+            exit 1
+          elif [ -n "$statefulset" ]; then
             kind=statefulset
-          elif workload=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployment -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) && [ -n "$workload" ]; then
+            workload="$statefulset"
+          elif [ -n "$deployment" ]; then
             kind=deployment
+            workload="$deployment"
           else
             echo "No StatefulSet or Deployment found for selector: $selector" >&2
+            kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get statefulset,deployment -o wide
             exit 1
           fi
           container=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get "$kind/$workload" -o jsonpath='{.spec.template.spec.containers[0].name}')
-          echo "Updating $kind/$workload container $container"
+          echo "SEALOS_KIND=$kind" >> "$GITHUB_ENV"
+          echo "SEALOS_WORKLOAD=$workload" >> "$GITHUB_ENV"
+          echo "SEALOS_CONTAINER=$container" >> "$GITHUB_ENV"
+          echo "Discovered $kind/$workload container $container"
+
+      - name: Configure email authentication environment
+        shell: bash
+        env:
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: |
+          set -euo pipefail
+          test -n "$AUTH_SECRET"
+          test -n "$SMTP_USER"
+          test -n "$SMTP_PASS"
+          test -n "$SMTP_FROM"
           kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
-            set image "$kind/$workload" "$container=$IMAGE_NAME:$GITHUB_SHA"
+            set env "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            AUTH_SECRET="$AUTH_SECRET" \
+            AUTH_DATA_FILE=/app/data/users.json \
+            AUTH_COOKIE_SECURE=true \
+            AUTH_SESSION_DAYS=14 \
+            PRIVACY_POLICY_VERSION=2026-08-20 \
+            SMTP_HOST=smtp.qq.com \
+            SMTP_PORT=465 \
+            SMTP_SECURE=true \
+            SMTP_USER="$SMTP_USER" \
+            SMTP_PASS="$SMTP_PASS" \
+            SMTP_FROM="$SMTP_FROM" \
+            APP_BASE_URL="$APP_URL" \
+            EMAIL_VERIFY_TTL_MINUTES=1440 \
+            PASSWORD_RESET_TTL_MINUTES=30
+
+      - name: Roll out the new image
+        shell: bash
+        run: |
+          set -euo pipefail
           kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
-            rollout status "$kind/$workload" --timeout=180s
+            set image "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            "$SEALOS_CONTAINER=$IMAGE_NAME:$GITHUB_SHA"
           kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
-            get "$kind/$workload" \
+            rollout status "$SEALOS_KIND/$SEALOS_WORKLOAD" --timeout=180s
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            get "$SEALOS_KIND/$SEALOS_WORKLOAD" \
             -o jsonpath='{.status.readyReplicas}/{.status.replicas}'
           echo
 
