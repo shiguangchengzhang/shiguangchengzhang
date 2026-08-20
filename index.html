@@ -423,6 +423,9 @@
   .ah-item .q { font-size: 13.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
   .ah-item .a { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; margin-top: 10px; display: none; }
   .ah-item.open .a { display: block; }
+  .coach-opt { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.5; color: var(--ink); margin-top: 10px; cursor: pointer; transition: .15s; }
+  .coach-opt:active { transform: scale(.98); background: var(--brand-soft); }
+  .coach-opt-idx { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--brand); color: #fff; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
 
   /* 话术条目 */
   .script-item { background: var(--bg); border-radius: 12px; padding: 10px 12px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); margin-bottom: 8px; display: flex; gap: 8px; align-items: flex-start; }
@@ -1247,6 +1250,8 @@ const AI_CONFIG = {
   chat: { enabled: true, endpoint: '/api/ai/chat', timeoutMs: 22000 },
   speechScore: { enabled: true, endpoint: '/api/ai/speech-score', timeoutMs: 60000, minDurationMs: 1000, maxDurationMs: 30000 },
   emotionVoice: { enabled: false, provider: '' },
+  // —— 沟通实战陪练（选择题式角色扮演 + 评估报告）——
+  coach: { enabled: true, endpoint: '/api/ai/coach', timeoutMs: 30000, maxRounds: 6 },
 };
 
 /* 系统提示词：约束真实大模型按「核心观点 / 话术模板 / 避坑提醒」三段式输出 JSON */
@@ -2296,6 +2301,16 @@ function renderSpeech() {
       ${recHtml}
     </div>
 
+    <div class="card" style="background:linear-gradient(135deg,#EEF2FF,#E0E7FF);border:1px solid #C7D2FE;">
+      <div class="row between">
+        <div class="card-title">🤖 AI 沟通实战陪练</div>
+        <span style="font-size:10px;color:#4F46E5;font-weight:800;background:#fff;padding:2px 7px;border-radius:20px;">NEW</span>
+      </div>
+      <div class="card-sub">选场景 → 扮演对话 → 出评估报告</div>
+      <div style="font-size:12.5px;color:var(--ink-2);margin:10px 0;line-height:1.7;">AI 扮演领导 / 同事 / 下属和你即兴过招，每轮给你 3 个回应选项；聊完评估你的社交沟通与领导沟通能力，指出不足并给出改进方案。</div>
+      <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="openCoach()">开始陪练 →</button>
+    </div>
+
     <div class="card">
       <div class="card-title">结构化表达</div>
       <div class="card-sub">两种万能框架，套上就能说</div>
@@ -2324,6 +2339,201 @@ function renderSpeech() {
 function copyScript(btn) {
   const text = btn.parentElement.querySelector('span:nth-child(2)').innerText.trim();
   copyRaw(text, () => { btn.textContent = '✓'; setTimeout(() => btn.textContent = '复制', 1200); });
+}
+
+/* ============ AI 沟通实战陪练（选择题式角色扮演 + 评估报告） ============ */
+const coachAreas = [
+  { id: 'report', name: '向上汇报', icon: '📊', intro: '向领导汇报进展 / 坏消息，让对方快速抓住重点' },
+  { id: 'refuse', name: '拒绝与边界', icon: '🛡️', intro: '拒绝同事甩锅、份外请求，守住边界又不伤关系' },
+  { id: 'resource', name: '争取资源', icon: '🗂️', intro: '向领导争取人手 / 预算 / 时间' },
+  { id: 'feedback', name: '向下反馈', icon: '👥', intro: '给下属提改进意见，指出问题又不打击积极性' },
+  { id: 'cross', name: '跨部门协作', icon: '🤝', intro: '推动不配合的跨部门同事，达成协作' },
+  { id: 'negotiate', name: '谈判说服', icon: '⚖️', intro: '争取更好的条件（薪资 / 资源 / 分工）' },
+];
+let coach = null;
+
+function openCoach() {
+  coach = { scenario: null, areas: [], messages: [], status: 'select', report: null, error: '', round: 0 };
+  renderCoach();
+}
+function pickCoachArea(id) {
+  if (coach.status !== 'select') return;
+  const i = coach.areas.indexOf(id);
+  if (i >= 0) coach.areas.splice(i, 1); else coach.areas.push(id);
+  renderCoach();
+}
+function startCoach() {
+  if (coach.status !== 'select') return;
+  if (!coach.areas.length) { toast('请先选择至少一个想练的能力方向'); return; }
+  coach.scenario = coach.areas.map(id => (coachAreas.find(a => a.id === id) || {}).name).filter(Boolean).join('、');
+  coach.messages = [];
+  coach.status = 'loading';
+  renderCoach();
+  coachTurn('play');
+}
+async function coachTurn(action) {
+  const sc = coach.scenario;
+  coach.pendingAction = action;
+  const cfg = AI_CONFIG.coach;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs || 30000);
+  try {
+    const res = await fetch(cfg.endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenario: sc, action, messages: coach.messages }),
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (action === 'evaluate') {
+      coach.report = data.report;
+      coach.status = 'report';
+      saveCoachReport(sc, data.report);
+    } else {
+      const step = data.step || {};
+      coach.messages.push({ role: 'assistant', content: step.content || '', options: step.options || [] });
+      coach.round = step.round || coach.round + 1;
+      coach.status = 'playing';
+    }
+  } catch (e) {
+    coach.error = e.name === 'AbortError' ? '陪练响应超时，请重试。' : '陪练服务暂时不可用，请稍后重试。';
+    coach.status = 'error';
+  } finally {
+    clearTimeout(timer);
+  }
+  renderCoach();
+}
+function chooseOptionAt(i) {
+  if (coach.status !== 'playing') return;
+  const last = coach.messages[coach.messages.length - 1];
+  const opt = last && last.options && last.options[i];
+  if (!opt) return;
+  coach.messages.push({ role: 'user', content: opt });
+  coach.status = 'loading';
+  renderCoach();
+  coachTurn('play');
+}
+function finishCoach() {
+  if (coach.status !== 'playing') return;
+  coach.status = 'evaluating';
+  renderCoach();
+  coachTurn('evaluate');
+}
+function saveCoachReport(scenario, report) {
+  const reports = modStore.get('coach_reports', []);
+  reports.unshift({ date: new Date().toISOString(), scenario, icon: '🎯', report });
+  modStore.set('coach_reports', reports.slice(0, 20));
+}
+function coachDialogHtml() {
+  return coach.messages.map(m => {
+    const cls = m.role === 'user' ? 'user' : 'ai';
+    return `<div class="msg ${cls}" style="max-width:100%;"><div class="bubble">${escapeHtml(m.content)}</div></div>`;
+  }).join('');
+}
+function coachReportHtml(report) {
+  if (!report) return '<div class="card">暂无评估结果</div>';
+  const dim = (label, d) => `
+    <div class="card">
+      <div class="row between">
+        <div class="card-title">${label}</div>
+        <div style="font-size:22px;font-weight:800;color:var(--brand);">${d.score}<small style="font-size:11px;"> 分</small></div>
+      </div>
+      ${(d.strengths && d.strengths.length) ? `<div style="margin-top:10px;"><div style="font-size:11px;color:#16A34A;font-weight:700;margin-bottom:5px;">✅ 亮点</div>${d.strengths.map(s => `<div style="font-size:12.5px;line-height:1.7;margin-bottom:4px;">· ${escapeHtml(s)}</div>`).join('')}</div>` : ''}
+      ${(d.weaknesses && d.weaknesses.length) ? `<div style="margin-top:10px;"><div style="font-size:11px;color:#C2410C;font-weight:700;margin-bottom:5px;">⚠️ 不足</div>${d.weaknesses.map(s => `<div style="font-size:12.5px;line-height:1.7;margin-bottom:4px;">· ${escapeHtml(s)}</div>`).join('')}</div>` : ''}
+    </div>`;
+  return `
+    <div class="card" style="text-align:center;padding:18px 16px;">
+      <div style="font-size:44px;">📊</div>
+      <div style="font-size:17px;font-weight:800;margin:8px 0 4px;">评估报告</div>
+      <div style="font-size:12px;color:var(--ink-3);">${escapeHtml(coach.scenario || '')} · 已存档可回看</div>
+    </div>
+    ${report.overview ? `<div class="card"><div class="card-title">总体评价</div><div style="font-size:13px;line-height:1.8;color:var(--ink-2);margin-top:8px;">${escapeHtml(report.overview)}</div></div>` : ''}
+    ${dim('🤝 社交沟通', report.social)}
+    ${dim('👔 领导沟通', report.leadership)}
+    ${(report.improvements && report.improvements.length) ? `<div class="card"><div class="card-title">📈 改进方案</div>${report.improvements.map((s, i) => `<div style="font-size:13px;line-height:1.7;margin-top:8px;"><b style="color:var(--brand);">${i + 1}.</b> ${escapeHtml(s)}</div>`).join('')}</div>` : ''}
+    <div style="display:flex;gap:10px;margin-top:6px;">
+      <button class="btn btn-ghost" style="flex:1;justify-content:center;" onclick="renderSpeech()">返回</button>
+      <button class="btn btn-primary" style="flex:1;justify-content:center;" onclick="openCoach()">换个方向再练</button>
+    </div>`;
+}
+function renderCoach() {
+  const body = $('mod-speech-body');
+  if (!coach) coach = { scenario: null, messages: [], status: 'select', report: null, error: '', round: 0 };
+  if (coach.status === 'select') {
+    body.innerHTML = `
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">🤖 AI 沟通实战陪练</div>
+          <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;" onclick="renderSpeech()">‹ 返回</button>
+        </div>
+        <div class="card-sub">选想提升的能力方向（可多选），AI 扮演对方和你过招，练完评估社交 & 领导沟通能力</div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px;color:var(--ink-3);margin-bottom:10px;">想提升的方向（可多选）</div>
+        <div class="chip-row">${coachAreas.map(a => `<button class="chip ${chip(coach.areas.includes(a.id))}" onclick="pickCoachArea('${a.id}')">${a.icon} ${a.name}</button>`).join('')}</div>
+      </div>
+      ${coachAreas.map(a => {
+        const on = coach.areas.includes(a.id);
+        return `<div class="card" style="cursor:pointer;${on ? 'border-color:var(--brand);' : ''}" onclick="pickCoachArea('${a.id}')">
+          <div class="row between">
+            <div style="font-size:14px;font-weight:700;">${a.icon} ${a.name}</div>
+            <span style="font-size:11px;color:${on ? 'var(--brand)' : 'var(--ink-3)'};">${on ? '✓ 已选' : '点击选择'}</span>
+          </div>
+          <div style="font-size:12.5px;color:var(--ink-2);margin-top:8px;line-height:1.6;">${a.intro}</div>
+        </div>`;
+      }).join('')}
+      <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px;" onclick="startCoach()">开始陪练 →</button>`;
+    return;
+  }
+
+  const header = `
+    <div class="card">
+      <div class="row between">
+        <div class="card-title">🎯 练：${escapeHtml(coach.scenario || '')}</div>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;" onclick="renderSpeech()">‹ 退出</button>
+      </div>
+      <div class="card-sub">AI 扮演对方和你过招${coach.round ? ' · 第 ' + coach.round + ' 轮' : ''}</div>
+    </div>`;
+
+  if (coach.status === 'loading' || coach.status === 'evaluating') {
+    body.innerHTML = `${header}
+      <div class="card" style="display:flex;flex-direction:column;gap:12px;">
+        ${coachDialogHtml()}
+        <div class="msg ai" style="max-width:100%;"><div class="bubble typing"><i></i><i></i><i></i></div></div>
+      </div>`;
+    return;
+  }
+
+  if (coach.status === 'error') {
+    body.innerHTML = `${header}
+      <div class="card">
+        <div style="font-size:13px;color:#C2410C;background:#FFF7ED;padding:12px;border-radius:12px;line-height:1.7;">${escapeHtml(coach.error)}</div>
+        <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px;" onclick="coachTurn(coach.pendingAction || 'play')">重试</button>
+        <button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:8px;" onclick="renderSpeech()">返回口才训练</button>
+      </div>`;
+    return;
+  }
+
+  if (coach.status === 'report') {
+    body.innerHTML = header + coachReportHtml(coach.report);
+    return;
+  }
+
+  // playing：显示对话 + 最新一轮选项
+  const last = coach.messages[coach.messages.length - 1];
+  const optionsHtml = (last && last.role === 'assistant' && last.options && last.options.length)
+    ? `<div class="card">
+        <div class="card-title">你会怎么回应？（选择其一）</div>
+        ${last.options.map((opt, i) => `
+          <button class="coach-opt" onclick="chooseOptionAt(${i})"><span class="coach-opt-idx">${'ABCD'[i] || (i + 1)}</span><span>${escapeHtml(opt)}</span></button>`).join('')}
+      </div>
+      <div style="text-align:center;margin-top:4px;">
+        <button class="btn btn-ghost" onclick="finishCoach()">结束对话，生成评估报告</button>
+      </div>`
+    : '';
+  body.innerHTML = `${header}
+    <div class="card" style="display:flex;flex-direction:column;gap:12px;">${coachDialogHtml()}</div>
+    ${optionsHtml}`;
 }
 
 /* ============ 模块四：情绪自愈 ============ */
@@ -2527,7 +2737,28 @@ function openReportPanel() {
         ${weekTotal === 0 ? '本周还没有打卡记录，去首页完成一个微任务，点亮你的成长曲线吧 ✨'
           : `本周你在「${strong.m}」上表现最突出，共积累 ${weekTotal} 分；建议把「${weak.m}」作为下周重点，一次一次练起来。`}
       </div>
-    </div>`);
+    </div>
+    ${coachReportListHtml()}`);
+}
+
+/* 沟通陪练评估记录（存档可回看） */
+function coachReportListHtml() {
+  const reports = modStore.get('coach_reports', []);
+  if (!reports.length) return '';
+  return `<div class="card">
+    <div class="card-title">🤖 沟通陪练评估记录</div>
+    <div class="card-sub">最近 ${reports.length} 次陪练 · 点击展开</div>
+    ${reports.slice(0, 5).map(r => {
+      const s = (r.report && r.report.social && r.report.social.score) || 0;
+      const l = (r.report && r.report.leadership && r.report.leadership.score) || 0;
+      const d = r.date ? new Date(r.date) : null;
+      const dateStr = d ? (d.getMonth() + 1) + '月' + d.getDate() + '日' : '';
+      return `<div class="ah-item" style="margin-top:10px;" onclick="toggleAh(this)">
+        <div class="q">${r.icon || '🎯'} ${r.scenario}<span style="color:var(--ink-3);font-weight:400;">${dateStr} · 社交 ${s} / 领导 ${l} ›</span></div>
+        <div class="a">${escapeHtml(r.report && r.report.overview ? r.report.overview : '')}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
 
 /* 学习小组（P2 占位） */
