@@ -15,8 +15,6 @@ permissions:
 env:
   IMAGE_NAME: hhnhhw/shiguangchengzhang
   SEALOS_NAMESPACE: ns-8zpzccfm
-  SEALOS_DEPLOYMENT: shiguangchengzhang-ouwyqxcl
-  SEALOS_CONTAINER: shiguangchengzhang-ouwyqxcl
   APP_URL: https://shiguangchengzhang-fxaethpl.sealosbja.site
 
 jobs:
@@ -67,6 +65,37 @@ jobs:
           export KUBECONFIG="$RUNNER_TEMP/sealos/kubeconfig"
           test "$(kubectl --insecure-skip-tls-verify config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = "$SEALOS_NAMESPACE"
           echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Discover current Sealos deployment target
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The deployment name changes when an app is recreated. Discover the
+          # one deployment in this namespace that currently runs this image.
+          mapfile -t deployments < <(
+            kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployments \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' \
+              | awk -v image="$IMAGE_NAME" '{ for (i = 2; i <= NF; i++) if (index($i, image ":") == 1) { print $1; break } }'
+          )
+          if [ "${#deployments[@]}" -ne 1 ]; then
+            echo "::error title=Sealos deployment discovery failed::Expected exactly one Deployment running $IMAGE_NAME, found ${#deployments[@]}." >&2
+            kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployments \
+              -o custom-columns=NAME:.metadata.name,IMAGES:.spec.template.spec.containers[*].image
+            exit 1
+          fi
+          deployment="${deployments[0]}"
+          mapfile -t containers < <(
+            kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployment "$deployment" \
+              -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\t"}{.image}{"\n"}{end}' \
+              | awk -v image="$IMAGE_NAME" 'index($2, image ":") == 1 { print $1 }'
+          )
+          if [ "${#containers[@]}" -ne 1 ]; then
+            echo "::error title=Sealos container discovery failed::Expected exactly one container in $deployment running $IMAGE_NAME, found ${#containers[@]}." >&2
+            exit 1
+          fi
+          echo "SEALOS_DEPLOYMENT=$deployment" >> "$GITHUB_ENV"
+          echo "SEALOS_CONTAINER=${containers[0]}" >> "$GITHUB_ENV"
+          echo "Deploying to $deployment / ${containers[0]}"
 
       - name: Configure email authentication environment
         shell: bash
