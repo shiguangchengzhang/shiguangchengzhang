@@ -15,8 +15,7 @@ permissions:
 env:
   IMAGE_NAME: hhnhhw/shiguangchengzhang
   SEALOS_NAMESPACE: ns-8zpzccfm
-  SEALOS_DEPLOYMENT: shiguangchengzhang-ouwyqxcl
-  SEALOS_CONTAINER: shiguangchengzhang-ouwyqxcl
+  SEALOS_APP: shiguangchengzhang-ouwyqxcl
   APP_URL: https://shiguangchengzhang-fxaethpl.sealosbja.site
 
 jobs:
@@ -72,13 +71,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          selector="cloud.sealos.io/app-deploy-manager=$SEALOS_APP"
+          kind=""
+          workload=""
+          if workload=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get statefulset -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) && [ -n "$workload" ]; then
+            kind=statefulset
+          elif workload=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployment -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) && [ -n "$workload" ]; then
+            kind=deployment
+          else
+            echo "No StatefulSet or Deployment found for selector: $selector" >&2
+            exit 1
+          fi
+          container=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get "$kind/$workload" -o jsonpath='{.spec.template.spec.containers[0].name}')
+          echo "Updating $kind/$workload container $container"
           kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
-            set image deployment/"$SEALOS_DEPLOYMENT" \
-            "$SEALOS_CONTAINER"="$IMAGE_NAME:$GITHUB_SHA"
+            set image "$kind/$workload" "$container=$IMAGE_NAME:$GITHUB_SHA"
           kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
-            rollout status deployment/"$SEALOS_DEPLOYMENT" --timeout=180s
+            rollout status "$kind/$workload" --timeout=180s
           kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
-            get deployment/"$SEALOS_DEPLOYMENT" \
+            get "$kind/$workload" \
             -o jsonpath='{.status.readyReplicas}/{.status.replicas}'
           echo
 
