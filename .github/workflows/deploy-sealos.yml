@@ -64,6 +64,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sealos"
           printf '%s' "$SEALOS_KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/sealos/kubeconfig"
           chmod 600 "$RUNNER_TEMP/sealos/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/sealos/kubeconfig"
+          test "$(kubectl --insecure-skip-tls-verify config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = "$SEALOS_NAMESPACE"
           echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
 
       - name: Roll out the new image

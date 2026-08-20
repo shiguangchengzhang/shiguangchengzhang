@@ -2,6 +2,16 @@
 
 工作流文件：`.github/workflows/deploy-sealos.yml`
 
+## 当前状态
+
+代码已成功推送到：
+
+```text
+https://github.com/hhnhhw/shiguangchengzhang
+```
+
+分支：`main`
+
 ## 发布机制
 
 向 GitHub 仓库的 `main` 分支 push 后，GitHub Actions 会：
@@ -16,15 +26,53 @@
 
 也可以在 GitHub Actions 页面手动运行 `workflow_dispatch`。
 
-## 必须配置的 GitHub Secrets
+## 配置 GitHub Secrets
 
-仓库进入 **Settings → Secrets and variables → Actions → New repository secret**，新增：
+仓库进入：
 
-- `DOCKERHUB_USERNAME`：Docker Hub 用户名 `hhnhhw`
-- `DOCKERHUB_TOKEN`：Docker Hub Access Token，不要使用账户密码
-- `SEALOS_KUBECONFIG_B64`：北京工作空间 `ns-8zpzccfm` 的 kubeconfig 文件 Base64 内容
+```text
+Settings → Secrets and variables → Actions → New repository secret
+```
 
-PowerShell 生成 kubeconfig Base64 的示例：
+新增以下 3 个仓库 Secret：
+
+### DOCKERHUB_USERNAME
+
+```text
+hhnhhw
+```
+
+### DOCKERHUB_TOKEN
+
+填写 Docker Hub Access Token，不要填写账户密码。
+
+创建地址：
+
+```text
+https://hub.docker.com/settings/security
+```
+
+建议权限：`Read & Write`。
+
+### SEALOS_KUBECONFIG_B64
+
+填写北京区域 `ns-8zpzccfm` 工作空间 kubeconfig 的 Base64 内容。
+
+先在本机确认 kubeconfig：
+
+```powershell
+$env:KUBECONFIG="$env:USERPROFILE\.sealos\kubeconfig"
+kubectl config current-context
+kubectl config view --minify -o jsonpath='{.contexts[0].context.namespace}'
+```
+
+必须输出：
+
+```text
+ns-8zpzccfm
+```
+
+再生成 Base64：
 
 ```powershell
 [Convert]::ToBase64String(
@@ -32,22 +80,44 @@ PowerShell 生成 kubeconfig Base64 的示例：
 )
 ```
 
-请确保生成 Base64 时使用的是北京区域、`ns-8zpzccfm` 工作空间对应的 kubeconfig。不要把 kubeconfig、Docker token 或 `.env` 提交到仓库。
+将完整输出粘贴到 `SEALOS_KUBECONFIG_B64`。不要把 kubeconfig、Token 或 `.env` 提交到仓库。
 
-## 首次启用
+## 首次运行
 
-1. 将当前项目上传到 GitHub 仓库；
-2. 默认分支设为 `main`；
-3. 添加上述 3 个 Secrets；
-4. push 一次代码，或在 Actions 页面手动执行工作流；
-5. 检查 Actions 日志和公网地址：
+Secrets 配置完成后，在 GitHub 页面打开：
 
-   `https://shiguangchengzhang-fxaethpl.sealosbja.site`
+```text
+Actions → Deploy to Sealos → Run workflow → main → Run workflow
+```
 
-## 注意事项
+或者本地提交代码：
 
-- GitHub Actions 不依赖当前对话，后续 push 会独立触发部署。
-- 工作流通过 `kubectl set image` 更新现有 Deployment，不会重建公网域名。
-- 镜像使用 commit SHA 标签，便于回滚；`main` 只是辅助标签。
-- 当前项目的运行时 AI/讯飞变量继续保留在 Sealos Deployment 中，不会从 GitHub Actions 日志输出。
-- 若 GitHub Actions 执行失败，当前线上版本不会因 `rollout status` 失败而自动删除；可在 Sealos 控制台或使用 `kubectl rollout undo` 回滚。
+```powershell
+git add .
+git commit -m "chore: enable Sealos auto deployment"
+git push origin main
+```
+
+## 线上地址
+
+```text
+https://shiguangchengzhang-fxaethpl.sealosbja.site
+```
+
+健康检查：
+
+```text
+https://shiguangchengzhang-fxaethpl.sealosbja.site/api/health
+```
+
+## 回滚
+
+如果新版本异常，可在 Sealos kubeconfig 有效时执行：
+
+```powershell
+kubectl --insecure-skip-tls-verify `
+  -n ns-8zpzccfm `
+  rollout undo deployment/shiguangchengzhang-ouwyqxcl
+```
+
+工作流更新的是现有 Deployment 镜像，不会删除或重建公网域名。运行时 AI/讯飞环境变量继续保留在 Sealos Deployment 中，不会写入 GitHub Actions 日志。
