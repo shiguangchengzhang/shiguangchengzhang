@@ -4,6 +4,16 @@
 
 ## 当前状态
 
+## 邮箱账号上线前置条件
+
+邮箱登录依赖服务端账号库。首次把本功能合并到 `main` 前，必须：
+
+1. 在 GitHub Actions Secrets 中添加高强度 `AUTH_SECRET`，以及 `SMTP_USER`、`SMTP_PASS`（QQ 邮箱授权码）、`SMTP_FROM`；部署工作流会在镜像滚动更新前将它们写入 Sealos Deployment。
+2. 在 Sealos 当前 Deployment 中创建并挂载持久化卷到 `/app/data`；新建模板部署会自动声明名为 `<app>-auth-data` 的 1Gi PVC。
+3. 保持单副本（`replicas: 1`）。当前 JSON 账号库不支持多副本共享写入。
+4. 更新完成后访问 `/api/health`，确认 `emailLogin: true`，并完成一次注册、退出、重新登录验证。
+
+
 代码已成功推送到：
 
 ```text

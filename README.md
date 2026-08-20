@@ -1,178 +1,127 @@
-# 拾光成长 · 原型交接说明
+﻿# 拾光成长
 
-面向 22-40 岁职场人的轻量化成长 App 前端原型。每天 4 个微任务（每个 ≤5 分钟），整合**自律 · 认知 · 口才 · 情绪**四大模块。
+面向职场人的轻量成长 Web App：每日自律、认知、口才、情绪微任务，AI 成长助手，以及基于科大讯飞 ISE 的浏览器录音评分。
 
----
+本分支将原有微信/演示登录替换为**邮箱注册与登录**，并补充了可操作的隐私政策和数据权利入口。
 
-## 一、文件说明
+## 已实现
 
-| 文件 | 说明 |
+- 每日任务、积分、勋章、成长画像、收藏、情绪记录与本机数据导出。
+- **邮箱账号系统**：注册、登录、恢复会话、退出登录、失败限速、账号信息导出与删除账号。
+- 密码使用 Node.js `scrypt` 加盐哈希；登录会话使用签名的 `HttpOnly`、`SameSite=Lax` Cookie，浏览器不保存密码或访问令牌。
+- **隐私控制**：首次使用隐私同意；注册时单独同意；AI 内容处理默认关闭；“我的 → 隐私设置”可查看政策、导出与清除数据。
+- AI 对话由服务端代理，第三方模型 API Key 不会下发至浏览器。
+- 口才训练通过浏览器主动请求麦克风权限，上传 PCM 音频至 `/api/ai/speech-score`，由服务端调用讯飞 ISE。
+
+## 数据边界
+
+| 数据 | 用途与保存位置 |
 |---|---|
-| `index.html` | 全部代码（HTML + CSS + JS 单文件，双击即可在浏览器打开） |
-| `README.md` | 本交接说明 |
-| 上级目录 `网页提取_QQ浏览器_20260815.docx` / `_extracted.txt` | 完整产品方案文档 |
+| 邮箱、昵称、密码哈希、隐私同意 | 服务端账号认证；持久化在 `AUTH_DATA_FILE` |
+| 会话 | 仅同源 `HttpOnly` Cookie，默认 14 天 |
+| 任务、日记、画像、收藏等成长数据 | 当前版本只保存在用户浏览器的 `localStorage` |
+| AI 对话内容 | 仅在用户主动开启“AI 内容处理”后发送给项目服务端和配置的模型服务商 |
+| 录音 | 仅在用户开始录音后采集，用于本次讯飞语音评测请求 |
 
----
+账号删除会清除服务端账号记录并退出登录；本机成长数据由用户单独导出或清除。
 
-## 二、当前进度（已完成）
+## 本地启动
 
-- 首页仪表盘（成长指数、今日四任务、今日状态、四模块入口）
-- 今日四任务（自律 / 认知 / 口才 / 情感自愈）：点「去完成」跳转到对应模块，模块内完成动作后自动打卡（+积分）
-- 数据页：四维能力条形图 + 近 7 天积分折线图（全部真实计算，非写死）
-- 个人中心：登录系统 + 20 枚可解锁勋章（解锁时弹窗鼓励 + 独立「勋章墙」页面，含进度条）+ 5 个二级板块（个人档案 / 收藏 / 报告 / 小组 / 隐私）
-- **四大模块详情页**：
-  - ⏱️ 极简自律：番茄专注计时（5/15/25 分钟 + 进度环）、2 分钟启动法专治拖延
-  - 🧠 职场认知：今日认知 + 六维思维库（逻辑结构化 / 决策 / 反内耗 / 高效工作 / 升职晋升 / 人际破局）+ 收藏
-  - 🎙️ 口才训练：1 分钟跟读 + 评分、结构化表达（总分总 / 结论先行）、6 场景话术库
-  - 🌿 情绪自愈：情绪五选一记录 + 专属疏导、成长日记、反内耗知识库
-- AI 成长助手（悬浮球对话）
-- 微信登录（演示登录 + 微信接口预留，见「三·五」）
-- 用户画像（首次进入引导填写岗位 / 年限 / 想提升方向）+ 个性化认知推送（按方向每天推）
-- 浏览器录音通过 Web Audio API 采集，并根据实际 `AudioContext.sampleRate` 线性重采样为 16kHz、16-bit、单声道 PCM，再上传到 `/api/ai/speech-score`。
-
----
-
-## 三、哪些是「模拟 / 待接真实 API」
-
-| 功能 | 现状 | 要接什么 | 改哪里 |
-|---|---|---|---|
-| AI 成长助手 | 本地关键词规则库 `aiKB` | 大模型（DeepSeek / 通义 / 智谱 / OpenAI…） | `AI_CONFIG.chat` |
-| 口才跟读评分 | 随机模拟分数 | 讯飞口语评测 / 自建语音评分 | `AI_CONFIG.speechScore` + `scoreSpeech()` |
-| 语音情绪识别 | 未实现（P2） | 情感分析 API | `AI_CONFIG.emotionVoice`（预留） |
-| 微信登录 | 演示登录（本地假登录） | 微信 OAuth（需后端 + AppID） | `AUTH_CONFIG` + `wxLogin()` |
-
----
-
-## 三·五、微信登录怎么接（预留）
-
-当前是**演示登录**（本地假登录，随机昵称，存 `localStorage` 的 `sg_user`），跑通完整登录流程：登录 → 界面显示昵称/头像 → 退出。
-
-接真实微信登录三步：
-
-1. 搜索 **`AUTH_CONFIG`**，把 `enabled` 改 `true`，填 `appId`、`backendUrl`，选 `mode`（`web` 网站扫码 / `mp` 小程序 / `app` App）。
-2. 实现 **`getWxCode()`** 函数：按 mode 拿到一次性 `code`（网站扫码跳开放平台二维码、小程序用 `wx.login`、App 用 SDK）。
-3. 写一个后端接口 `POST backendUrl`，入参 `{ code }`，后端用 **AppSecret** 换 `openid` 并返回 `{ nick, avatar, openid }`。
-
-> ⚠️ `AppSecret` 只能放后端，永远不要放前端。后端可用微信云开发 / 云函数 / 任意 Serverless。
-> 资质要求：网站扫码需「网站应用」（企业认证）；小程序个人可注册；App 需「移动应用」。
-
----
-
-## 四、怎么接真实 AI（安全服务端代理）
-
-项目已经接入真实 AI：浏览器只请求本项目的 `POST /api/ai/chat`，不会直连第三方模型，也不会接触供应商 API key。
-
-1. 安装 Node.js 18+。
-2. 复制 `.env.example` 为 `.env`。
-3. 只在 `.env` 中填写服务商配置：
-
-```env
-AI_BASE_URL=https://api.deepseek.com/v1
-AI_MODEL=deepseek-chat
-AI_API_KEY=你的真实Key
-PORT=8787
-```
-
-4. 启动：`npm start`。
-5. 打开 `http://127.0.0.1:8787`，进入 AI 成长助手测试。
-
-接口：`GET /api/health` 只返回运行状态和模型名；`POST /api/ai/chat` 接收 `{ "message": "你的职场问题" }`，返回 `point/script/avoid`。
-
-支持 OpenAI 兼容接口。切换供应商时只修改 `.env` 的 `AI_BASE_URL` 与 `AI_MODEL`，不要修改前端或把 key 写入 `index.html`。
-
-## 五、科大讯飞口语评测接入
-
-口才训练已支持浏览器录音并通过服务端调用科大讯飞 ISE 语音评测。浏览器不会接触讯飞凭据。
-
-在 `.env` 中填写讯飞控制台获取的三项配置：
-
-```env
-IFLYTEK_APP_ID=你的AppID
-IFLYTEK_API_KEY=你的APIKey
-IFLYTEK_API_SECRET=你的APISecret
-IFLYTEK_TIMEOUT_MS=45000
-MAX_AUDIO_BYTES=10485760
-```
-
-启动服务：
-
-```bash
+```powershell
+Copy-Item .env.example .env
 npm install
 npm start
 ```
 
-打开 `http://127.0.0.1:8787`，进入「口才训练」，点击「开始跟读」，说完后点击「停止并评测」。流程为：
+本地 `http://127.0.0.1:8787` 开发时，请在 `.env` 中设置：
 
-```text
-浏览器 MediaRecorder（audio/webm/opus）
-→ POST /api/ai/speech-score
-→ 服务端调用讯飞 ISE WebSocket
-→ 返回语速、流畅度、完整度、发音等评分
+```env
+AUTH_SECRET=替换为足够长的随机字符串
+AUTH_COOKIE_SECURE=false
+AUTH_DATA_FILE=./data/users.json
 ```
 
-接口使用 `multipart/form-data`，字段如下：
+再按需填写 AI 和讯飞环境变量。基础检查：
 
-- `audio`：录音文件
-- `targetText`：跟读目标文本
-- `durationMs`：录音时长
+```powershell
+npm run check
+```
 
-> 前端已直接采集 16kHz、16-bit、单声道 PCM（`audio/L16;rate=16000`），服务端无需 FFmpeg 转码。讯飞返回的评测结果为 Base64 编码 XML，服务端使用 XML parser 解码后映射为评分字段。不要把 AppID、APIKey、APISecret 写入 `index.html`。
+## 邮箱验证与忘记密码
 
-官方文档参考：[讯飞语音评测（流式版）API 文档](https://shandong.xfyun.cn/doc/Ise/IseAPI.html)
+注册成功后，系统会向注册邮箱发送一次性验证链接；验证链接默认 24 小时有效。账号在验证前不能登录，但可以从登录页重新发送验证邮件。
 
+登录页的“忘记密码”会发送一次性重置链接，默认 30 分钟有效。接口对未注册邮箱也返回相同提示，避免泄露账号是否存在；密码重置成功会使旧会话失效。
 
+个人 QQ 邮箱使用以下生产配置：
 
-- **绝对不要**把真实 key 写入 `index.html`、localStorage、前端请求头、README、截图、聊天记录或 Git。
-- `.env` 已加入 `.gitignore`，只提交 `.env.example`。
-- 服务端日志不会打印请求内容或 API key；对外错误只返回通用错误信息。
-- 如果 key 曾出现在前端、Git 历史、公开仓库或聊天中，请立即撤销并重新生成。
-- 生产部署时把 `AI_API_KEY` 配置为平台 Secret，并增加域名白名单、限流和鉴权。
+```env
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=houzhenao_2007@qq.com
+SMTP_PASS=QQ邮箱SMTP授权码
+SMTP_FROM=拾光成长 <houzhenao_2007@qq.com>
+APP_BASE_URL=https://你的Sealos公网域名
+```
 
-## 六、目前仍为预留/模拟的功能
+`SMTP_PASS` 必须是 QQ 邮箱生成的授权码，不能是 QQ 登录密码。不要提交这些值，也不要在聊天或截图中泄露授权码。
 
-| 功能 | 现状 | 后续接入 |
-|---|---|---|
-| 口才跟读评分 | 随机模拟分数 | 通过服务端 `/api/ai/speech-score` 接讯飞或自建语音服务 |
-| 语音情绪识别 | 未实现（P2） | 情感分析 API |
-| 微信登录 | 演示登录 | 微信 OAuth（需后端 + AppID） |
+## 接口
 
-> 讯飞 `appId` / `apiKey` / `apiSecret` 同样只能放服务端，不能填回前端。
+| 方法与路径 | 说明 |
+|---|---|
+| `GET /api/health` | 运行状态、AI/讯飞配置状态 |
+| `POST /api/auth/register` | 创建邮箱账号；必须携带当前隐私政策同意 |
+| `POST /api/auth/login` | 邮箱密码登录；失败请求会限速 |
+| `GET /api/auth/session` | 读取当前 Cookie 会话 |
+| `POST /api/auth/logout` | 清除会话 Cookie |
+| `GET /api/account/export` | 导出当前账号的服务端资料 |
+| `DELETE /api/account` | 输入当前邮箱确认后删除账号 |
+| `POST /api/ai/chat` | AI 成长助手 |
+| `POST /api/ai/speech-score` | 讯飞语音评分（multipart/form-data） |
 
----
+注册请求示例：
 
-## 七、微信登录怎么接（预留）
+```json
+{
+  "email": "name@example.com",
+  "displayName": "小光",
+  "password": "Example123",
+  "privacyAccepted": true,
+  "privacyPolicyVersion": "2026-08-20"
+}
+```
 
-当前是演示登录。真实微信登录需要前端获取一次性 `code`，再由后端使用 AppSecret 换取用户信息；AppSecret 只能放后端。
+## Sealos 部署（当前项目已配置自动镜像发布）
 
----
+仓库的 `.github/workflows/deploy-sealos.yml` 会在 **`main` 分支**推送后构建镜像并更新现有 Sealos Deployment。合并邮箱登录功能前，请先完成以下生产配置：
 
-## 八、口才评分与其他待办
+1. 在 GitHub 仓库 Secrets 中新增 `AUTH_SECRET`，用密码管理器或 `openssl rand -base64 48` 生成；绝不能提交到仓库。
+2. 在 Sealos 中为当前应用创建持久化存储并挂载到 **`/app/data`**。这一步是必须的：账号文件默认位于 `/app/data/users.json`，没有持久化卷时容器重建会丢失账号。
+3. 确认 Deployment 环境变量包含：
 
-1. 口才评分当前仍是随机模拟分数；后续应由浏览器采集音频并上传到后端 `/api/ai/speech-score`，讯飞凭据只能放服务端。
-2. 语音情绪识别尚未实现。
-3. 统计同步、学习小组等功能仍使用本地数据或占位实现。
+   ```env
+   NODE_ENV=production
+   AUTH_SECRET=由 GitHub Secret 注入
+   AUTH_DATA_FILE=/app/data/users.json
+   AUTH_COOKIE_SECURE=true
+   AUTH_SESSION_DAYS=14
+   PRIVACY_POLICY_VERSION=2026-08-20
+   ```
 
----
+4. 保持副本数为 **1**。当前账号存储是小型单实例 JSON 文件库；多副本部署应先迁移到 PostgreSQL 等数据库。
+5. 部署完成后访问线上 `/api/health`，确认返回 `emailLogin: true`，再通过浏览器注册一个测试账号并验证重启后仍可登录。
 
-## 九、建议的后续开发顺序
+## 上线前必须补全
 
-1. 把 `statStore` 本地统计换成后端接口（Firestore 或任意后端），实现多端同步
-2. 接真实微信登录（见「三·五」）
-3. AI 助手接真实大模型（走你自己的后端代理，见安全提醒）
-4. 口才跟读真实录音 + 讯飞评分
-5. 成长报告做成分享长图（方案里的 P1 加分项，现已有文字版周报）
-6. 学习小组 / 企业版看板（P2，现已有占位页）
+当前隐私政策覆盖已实现的功能范围，但对外正式运营前必须补充真实的：运营主体、联系邮箱、个人信息保护负责人、投诉渠道、实际 AI 服务商、数据保存期限和备份策略。
 
----
+“忘记密码”和邮箱验证尚未实现，因为它们需要真实邮件服务、验证码存储和额外的风控机制。不要用假的“已发送邮件”流程替代；接入数据库与邮件服务后再上线相应功能。
 
-## 九、技术备注
+## 安全要求
 
-- 运行方式：使用 `npm start` 启动 `server.js`，由服务端同时提供 `index.html` 和安全 AI 代理；不要直接双击 HTML 测试真实 AI。
-- 数据模型集中在 `state` 对象（约 index.html 中段），迁移后端时从它入手。
-- 真实统计层：搜索 `statStore` / `addPoints` / `dimScore` / `weeklyData`，所有积分与能力值从这里动态计算。
-- 本地存储的 key 前缀为 `sg_`：`sg_stats`（累计统计）、`sg_tasks`（当天完成）、`sg_user`（登录态）、`sg_profile`（用户画像）、`sg_badges`（已解锁勋章）、`sg_cog_log`（认知抽取记录）、`sg_cog_favs`、`sg_emotion_today`、`sg_diary`。
-- 登录相关代码集中在 `index.html` 搜索 `AUTH_CONFIG`、`wxLogin`、`demoLogin`、`applyUser`。
-- 用户画像与个性化推送：搜索 `getProfile` / `openOnboarding` / `saveProfile` / `todayCog`（`todayCog` 按「想提升方向」的分类过滤每日认知）。
-- 认知内容库：搜索 `cognitionCategories`（通用 6 大分类）与 `roleItems`（岗位专属，`role` 匹配画像里的岗位，`todayCog` 优先抽它实现「不同岗位推不同内容」）。每条含 title/concept/case/use/avoid。「每天随机不重复」由 `todayCog` + `sg_cog_log` 实现——加新内容只需往对应数组加一条对象即可。
-- 勋章系统：搜索 `BADGES`（20 枚勋章，`test` 用真实数据判断解锁条件、`prog` 返回 `{cur,target}` 供进度条展示）、`checkBadges`、`renderBadges`、`showNextBadge`、`openBadgePage`（独立「勋章墙」页面）。每次加分后自动检测，新解锁的勋章逐个弹窗鼓励。
-- 二级面板（个人档案 / 收藏 / 报告）搜索 `openPanel`、`openProfilePanel`、`openFavPanel`、`openReportPanel`。
+- 禁止提交 `.env`、`data/users.json`、任何 API Key 或 `AUTH_SECRET`。
+- 生产环境未配置 `AUTH_SECRET` 时服务会拒绝启动，避免使用临时会话密钥。
+- `AUTH_COOKIE_SECURE=true` 用于 HTTPS 公网域名；仅本地 HTTP 开发使用 `false`。
+- 语音训练的讯飞凭据和 AI API Key 都只能存在于服务端环境变量中。

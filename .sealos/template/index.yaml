@@ -67,6 +67,36 @@ spec:
       type: string
       default: '10485760'
       required: false
+    AUTH_SECRET:
+      description: 邮箱账号会话签名密钥（敏感，生产环境必填）
+      type: string
+      default: ''
+      required: true
+    AUTH_SESSION_DAYS:
+      description: 邮箱登录会话有效天数
+      type: string
+      default: '14'
+      required: false
+    PRIVACY_POLICY_VERSION:
+      description: 当前隐私政策版本
+      type: string
+      default: '2026-08-20'
+      required: false
+    SMTP_USER:
+      description: QQ 邮箱发信账号
+      type: string
+      default: ''
+      required: true
+    SMTP_PASS:
+      description: QQ 邮箱 SMTP 授权码（敏感）
+      type: string
+      default: ''
+      required: true
+    SMTP_FROM:
+      description: 邮件发件人，例如 拾光成长 <name@qq.com>
+      type: string
+      default: ''
+      required: true
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -104,6 +134,34 @@ spec:
               value: '8787'
             - name: CORS_ORIGINS
               value: ''
+            - name: AUTH_SECRET
+              value: ${{ inputs.AUTH_SECRET }}
+            - name: AUTH_DATA_FILE
+              value: /app/data/users.json
+            - name: AUTH_COOKIE_SECURE
+              value: 'true'
+            - name: AUTH_SESSION_DAYS
+              value: ${{ inputs.AUTH_SESSION_DAYS }}
+            - name: PRIVACY_POLICY_VERSION
+              value: ${{ inputs.PRIVACY_POLICY_VERSION }}
+            - name: SMTP_HOST
+              value: smtp.qq.com
+            - name: SMTP_PORT
+              value: '465'
+            - name: SMTP_SECURE
+              value: 'true'
+            - name: SMTP_USER
+              value: ${{ inputs.SMTP_USER }}
+            - name: SMTP_PASS
+              value: ${{ inputs.SMTP_PASS }}
+            - name: SMTP_FROM
+              value: ${{ inputs.SMTP_FROM }}
+            - name: APP_BASE_URL
+              value: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+            - name: EMAIL_VERIFY_TTL_MINUTES
+              value: '1440'
+            - name: PASSWORD_RESET_TTL_MINUTES
+              value: '30'
             - name: AI_BASE_URL
               value: ${{ inputs.AI_BASE_URL }}
             - name: AI_MODEL
@@ -124,6 +182,9 @@ spec:
               value: ${{ inputs.IFLYTEK_TIMEOUT_MS }}
             - name: MAX_AUDIO_BYTES
               value: ${{ inputs.MAX_AUDIO_BYTES }}
+          volumeMounts:
+            - name: auth-data
+              mountPath: /app/data
           ports:
             - name: http
               containerPort: 8787
@@ -150,6 +211,23 @@ spec:
             limits:
               cpu: 200m
               memory: 256Mi
+      volumes:
+        - name: auth-data
+          persistentVolumeClaim:
+            claimName: ${{ defaults.app_name }}-auth-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${{ defaults.app_name }}-auth-data
+  labels:
+    app: ${{ defaults.app_name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
