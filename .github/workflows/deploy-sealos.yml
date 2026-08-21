@@ -133,6 +133,27 @@ jobs:
             EMAIL_VERIFY_TTL_MINUTES=10 \
             PASSWORD_RESET_TTL_MINUTES=10
 
+      - name: Configure AI environment
+        shell: bash
+        env:
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_TEMPERATURE: ${{ secrets.AI_TEMPERATURE }}
+          AI_TIMEOUT_MS: ${{ secrets.AI_TIMEOUT_MS }}
+        run: |
+          set -euo pipefail
+          test -n "$AI_BASE_URL"
+          test -n "$AI_MODEL"
+          test -n "$AI_API_KEY"
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            set env "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            AI_BASE_URL="$AI_BASE_URL" \
+            AI_MODEL="$AI_MODEL" \
+            AI_API_KEY="$AI_API_KEY" \
+            AI_TEMPERATURE="${AI_TEMPERATURE:-0.7}" \
+            AI_TIMEOUT_MS="${AI_TIMEOUT_MS:-20000}"
+
       - name: Roll out the new image
         shell: bash
         run: |
@@ -146,6 +167,20 @@ jobs:
             get "$SEALOS_KIND/$SEALOS_WORKLOAD" \
             -o jsonpath='{.status.readyReplicas}/{.status.replicas}'
           echo
+
+      - name: Verify public AI smoke test
+        shell: bash
+        env:
+          APP_URL: ${{ env.APP_URL }}
+        run: |
+          set -euo pipefail
+          body='{"message":"deployment smoke test: reply with one short sentence"}'
+          code=$(curl --silent --show-error --output /tmp/ai.json --write-out '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            --data "$body" "$APP_URL/api/ai/chat" || true)
+          cat /tmp/ai.json
+          test "$code" = "200"
+          grep -q '"source":"provider"' /tmp/ai.json
 
       - name: Verify the public app
         shell: bash
