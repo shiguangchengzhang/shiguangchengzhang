@@ -1306,7 +1306,7 @@ function renderLineChart() {
    ========================================================================= */
 const AI_CONFIG = {
   // —— AI 成长助手（对话问答）——
-  chat: { enabled: true, endpoint: '/api/ai/chat', timeoutMs: 22000 },
+  chat: { enabled: true, alwaysOn: true, endpoint: '/api/ai/chat', timeoutMs: 22000 },
   speechScore: { enabled: true, endpoint: '/api/ai/speech-score', timeoutMs: 60000, minDurationMs: 1000, maxDurationMs: 30000 },
   emotionVoice: { enabled: false, provider: '' },
   // —— 沟通实战陪练（选择题式角色扮演 + 评估报告）——
@@ -1468,7 +1468,7 @@ function aiMatch(text) {
      header 带 x-api-key + anthropic-version，body 结构与 OpenAI 不同。） */
 async function callAI(text) {
   const cfg = AI_CONFIG.chat;
-  if (!cfg.enabled || !getPrivacyPreferences().aiContentProcessing) return aiMatch(text);
+  if (!cfg.enabled) return aiMatch(text);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
   try {
@@ -1613,13 +1613,13 @@ function privacyPolicyHtml() {
   <h4>1. 适用范围与运营者</h4><p>本政策适用于「拾光成长」网站与服务。正式上线前，请在此处补充真实的运营主体名称、联系邮箱和投诉渠道。</p>
   <h4>2. 我们处理哪些信息</h4><p>创建邮箱账号时，我们处理邮箱地址、昵称、经加盐哈希后的密码、注册/登录时间及隐私同意记录。任务、积分、偏好、收藏、情绪记录和日记默认保存在当前浏览器。</p>
   <h4>3. 使用目的与保存</h4><p>账号信息仅用于身份识别、维持登录状态、账号安全和响应你的数据请求。密码不会以明文保存；会话通过仅限同源访问的 HttpOnly Cookie 维持。服务端账号库必须使用持久化卷保存。</p>
-  <h4>4. AI 内容处理（可选）</h4><p>AI 助手默认使用本地规则库。只有你在“我的 → 隐私设置”主动开启 AI 内容处理后，聊天内容才会发送至本项目服务端及已配置的模型服务商。请勿输入密码、证件号、银行卡或商业秘密。</p>
+  <h4>4. AI 内容处理</h4><p>AI 助手通过本项目服务端及已配置的模型服务商提供真实 AI 服务；服务暂时不可用时使用本地规则库兜底。请勿输入密码、证件号、银行卡或商业秘密。</p>
   <h4>5. 第三方与设备权限</h4><p>当 AI 内容处理开启时，内容会发送给已配置的模型服务商。当前版本不主动请求相机、麦克风、通讯录或定位权限；语音训练只会在你主动开始录音时请求麦克风授权。</p>
   <h4>6. 你的权利</h4><p>你可查看本政策、导出本机成长数据和服务端账号信息、关闭 AI 内容处理、清除本机成长数据，或删除邮箱账号。删除账号不会自动删除本机成长数据，后者需单独清理。</p>
   <h4>7. 更新与联系</h4><p>处理目的、范围或第三方服务发生实质变化时，本政策会更新版本并再次征求同意。正式运营前请补充数据保护联系人和投诉渠道。</p></div>`;
 }
 function openPrivacyPolicy(fromConsent) { privacyPolicyReviewing = Boolean(fromConsent && !hasPrivacyConsent()); privacyReturnToAuth = !privacyPolicyReviewing && $('auth-overlay').classList.contains('open'); if (privacyPolicyReviewing) closePrivacyConsent(); if (privacyReturnToAuth) closeAuth(); openPanel('隐私政策', '请仔细阅读后自主决定是否同意', '📄', privacyPolicyHtml()); }
-function setAiContentProcessing(enabled) { if (!ensurePrivacyConsent()) return; setPrivacyPreferences({ aiContentProcessing: Boolean(enabled) }); openPrivacyPanel(); toast(enabled ? '已开启 AI 内容处理授权' : '已关闭 AI 内容处理，AI 将使用本地规则库'); }
+function setAiContentProcessing(enabled) { toast('AI 内容处理始终开启，由服务端安全代理处理'); openPrivacyPanel(); }
 function currentUser() { try { return JSON.parse(localStorage.getItem('sg_user') || 'null'); } catch (e) { return null; } }
 function setCurrentUser(user) { try { localStorage.setItem('sg_user', JSON.stringify(user)); } catch (e) {} }
 function clearUser() { try { localStorage.removeItem('sg_user'); } catch (e) {} }
@@ -2842,7 +2842,7 @@ function openPrivacyPanel() {
   const u = currentUser(), prefs = getPrivacyPreferences();
   openPanel('隐私设置', '授权管理、数据导出与清理', '🔒', `
     <div class="card"><div class="card-title">数据处理说明</div><div class="card-sub">成长记录默认保存在当前浏览器；邮箱账号仅保存身份与会话信息。AI 服务需你主动授权。</div><div style="margin-top:14px;">${profileRow('登录方式', u ? escapeHtml(u.nick) + '（邮箱账号）' : '未登录')}${profileRow('本机数据', '任务、偏好、收藏、情绪记录与日记')}${profileRow('账号邮箱', u && u.email ? escapeHtml(u.email) : '登录后可用')}</div></div>
-    <div class="card"><div class="card-title">可选授权</div><label class="privacy-switch"><span class="meta"><b>AI 内容处理</b><span>开启后，AI 对话内容会发送至本项目服务端及已配置的模型服务商；关闭时使用本地规则库。</span></span><input type="checkbox" ${prefs.aiContentProcessing ? 'checked' : ''} onchange="setAiContentProcessing(this.checked)"/></label><div class="privacy-switch"><span class="meta"><b>邮箱账号</b><span>仅保存邮箱、昵称、加盐哈希后的密码、会话和隐私同意记录，用于身份验证与账号安全。</span></span><span style="font-size:11px;color:var(--ink-3);">必要信息</span></div></div>
+    <div class="card"><div class="card-title">AI 内容处理</div><div class="card-sub">AI 助手固定通过本项目服务端调用已配置的真实模型；服务暂时不可用时才使用本地规则库兜底。请勿输入密码、证件号、银行卡或商业秘密。</div><div style="margin-top:14px;">${profileRow('AI 状态', '始终开启 · 服务端代理')}</div></div>
     <div class="card"><div class="card-title">你的数据权利</div><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;" onclick="openPrivacyPolicy()">📄 查看隐私政策</button><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;" onclick="exportLocalData()">⬇ 导出本机成长数据</button>${u ? '<button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;" onclick="exportAccountData()">⬇ 导出账号信息</button><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;color:#E11D48;" onclick="deleteAccount()">删除邮箱账号</button>' : ''}<button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;color:#E11D48;" onclick="clearLocalData(false)">🗑 清除成长数据</button><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;color:#E11D48;" onclick="clearLocalData(true)">撤回同意并清除全部数据</button></div>`);
 }
 function localDataKeys(includePrivacy) { const keys = ['sg_stats','sg_tasks','sg_user','sg_profile','sg_badges','sg_cog_log','sg_cog_favs','sg_emotion_today','sg_diary']; return includePrivacy ? keys.concat([PRIVACY_CONSENT_KEY, PRIVACY_PREFS_KEY]) : keys; }
