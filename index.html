@@ -2311,10 +2311,10 @@ async function scoreSpeech(text, audioBlob, durationMs) {
       error.httpStatus = response.status;
       throw error;
     }
-    if (!data.result?.scores || Object.values(data.result.scores).every(value => Number(value || 0) === 0)) {
-      const error = new Error('讯飞未返回有效评分');
+    if (!data.result?.scores || !data.result?.raw) {
+      const error = new Error('讯飞未返回有效评测数据');
       error.speechCode = 'EMPTY_SCORE';
-      error.speechDetail = '接口请求已完成，但评测结果为空或全部为 0。请确认录音中有清晰人声。';
+      error.speechDetail = '接口未返回可解析的评测 XML，请查看服务端日志。';
       throw error;
     }
     return data.result;

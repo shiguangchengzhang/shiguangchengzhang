@@ -67,7 +67,23 @@ APP_BASE_URL=https://你的Sealos公网域名
 
 `SMTP_PASS` 必须是 QQ 邮箱生成的授权码，不能是 QQ 登录密码。不要提交这些值，也不要在聊天或截图中泄露授权码。
 
-## 接口
+## 公网部署适配
+
+服务端默认监听 `HOST=0.0.0.0`，适合容器、Sealos 和反向代理；公网部署时请设置：
+
+```env
+HOST=0.0.0.0
+PORT=8787
+CORS_ORIGINS=https://你的公网域名
+AUTH_COOKIE_SECURE=true
+APP_BASE_URL=https://你的公网域名
+```
+
+如果前端和 API 使用同一个公网域名，`CORS_ORIGINS` 可填写该域名；如果使用多个前端域名，用英文逗号分隔。不要在生产环境使用 `CORS_ORIGINS=*` 搭配 Cookie 鉴权。
+
+语音录音必须通过 HTTPS 公网地址访问（或本机 localhost）；直接使用公网 HTTP 地址时，浏览器通常会阻止麦克风权限。反向代理需要把外部 HTTPS 请求转发到 Node 服务，并保留正常的 `Host`、`X-Forwarded-Proto` 请求头。公网部署后请重新启动服务并硬刷新浏览器。
+
+
 
 | 方法与路径 | 说明 |
 |---|---|

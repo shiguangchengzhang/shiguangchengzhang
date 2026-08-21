@@ -10,6 +10,7 @@ const nodemailer = require('nodemailer');
 loadEnvFile(path.join(__dirname, '.env'));
 
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || '0.0.0.0';
 const AI_BASE_URL = (process.env.AI_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/$/, '');
 const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
 const AI_API_KEY = process.env.AI_API_KEY || '';
@@ -76,8 +77,14 @@ function loadEnvFile(file) {
   }
 }
 
+function resolveAllowedOrigin(origin) {
+  if (!origin) return '';
+  if (CORS_ORIGINS.includes('*')) return origin;
+  return CORS_ORIGINS.includes(origin) ? origin : '';
+}
+
 function json(res, status, body, origin, extraHeaders = {}) {
-  const allowOrigin = origin && CORS_ORIGINS.includes(origin) ? origin : '';
+  const allowOrigin = resolveAllowedOrigin(origin);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -521,16 +528,34 @@ function extractIflytekScores(result) {
     return value === null ? fallback : Math.max(0, Math.min(100, Math.round(value)));
   };
   return {
-    total: pick(['total_score', 'totalScore', 'overall_score']),
-    fluency: pick(['fluency_score', 'fluencyScore']),
-    completeness: pick(['integrity_score', 'integrityScore', 'completeness']),
-    pronunciation: pick(['phone_score', 'pronunciation_score', 'standard_score']),
-    tone: pick(['tone_score', 'emotion_score']),
+    total: pick(['@_total_score', 'total_score', 'totalScore', 'overall_score']),
+    fluency: pick(['@_fluency_score', 'fluency_score', 'fluencyScore']),
+    completeness: pick(['@_integrity_score', 'integrity_score', 'integrityScore', 'completeness']),
+    pronunciation: pick(['@_phone_score', 'phone_score', 'pronunciation_score', 'standard_score']),
+    tone: pick(['@_tone_score', 'tone_score', 'emotion_score']),
     raw: root
   };
 }
 
-function evaluateWithIflytek({ audio, targetText }) {
+function inspectPcm16(audio, sampleRate) {
+  if (!Buffer.isBuffer(audio) || audio.length < 320) throw new Error('audio is empty or too short');
+  if (audio.length % 2 !== 0) throw new Error('PCM audio must be 16-bit little-endian');
+  if (Number(sampleRate || 16000) !== 16000) throw new Error('PCM sample rate must be 16000Hz');
+  let sumSquares = 0;
+  let peak = 0;
+  const samples = audio.length / 2;
+  for (let i = 0; i < audio.length; i += 2) {
+    const value = audio.readInt16LE(i);
+    const absolute = Math.abs(value);
+    peak = Math.max(peak, absolute);
+    sumSquares += value * value;
+  }
+  const rms = Math.sqrt(sumSquares / samples);
+  if (peak < 80 || rms < 12) throw new Error('no audible speech detected in PCM audio');
+  return { samples, durationMs: Math.round(samples / 16000 * 1000), peak, rms: Math.round(rms) };
+}
+
+function evaluateWithIflytek({ audio, targetText, pcmStats }) {
   if (!IFLYTEK_APP_ID || !IFLYTEK_API_KEY || !IFLYTEK_API_SECRET) {
     throw new Error('IFLYTEK credentials are not configured');
   }
@@ -539,7 +564,7 @@ function evaluateWithIflytek({ audio, targetText }) {
     const results = [];
     const frameSize = 1280;
     const frameIntervalMs = 40;
-    const text = Buffer.from(`\ufeff${targetText}`, 'utf8').toString('base64');
+    const text = `\ufeff${targetText}`;
     let state = 'CONNECTING';
     let offset = 0;
     let timer = null;
@@ -563,47 +588,44 @@ function evaluateWithIflytek({ audio, targetText }) {
     };
 
     const fail = message => finish(new Error(message));
+    const trace = (event, extra = {}) => console.log(`[Speech][${state}] ${event}`, JSON.stringify(extra));
     const sendJson = payload => {
       if (finished || ws.readyState !== WebSocket.OPEN) return fail(`iFlytek socket is not open while in ${state}`);
       ws.send(JSON.stringify(payload));
+      trace('sent', { cmd: payload.business?.cmd, aus: payload.business?.aus, status: payload.data?.status, bytes: Buffer.byteLength(payload.data?.data || '', 'base64') });
     };
     const sendAudio = (chunk, aus, status) => {
       sendJson({
         business: { cmd: 'auw', aus },
-        data: { status, data: chunk.toString('base64'), format: 'audio/L16;rate=16000', encoding: 'raw' }
+        data: { status, data: chunk.toString('base64') }
       });
     };
-    const scheduleNext = () => {
-      if (!finished) frameTimer = setTimeout(sendNextFrame, frameIntervalMs);
-    };
     const sendNextFrame = () => {
-      if (finished || state !== 'STREAMING') return;
-      if (offset >= audio.length) {
-        state = 'WAITING_RESULT';
-        sendAudio(Buffer.alloc(0), 4, 2);
-        return;
-      }
+      if (finished || state !== 'WAITING_AUDIO_ACK') return;
       const chunk = audio.subarray(offset, Math.min(offset + frameSize, audio.length));
+      if (!chunk.length) return fail('audio stream ended before final frame');
       offset += chunk.length;
       const isLast = offset >= audio.length;
       sendAudio(chunk, isLast ? 4 : 2, isLast ? 2 : 1);
-      if (isLast) state = 'WAITING_RESULT';
-      else scheduleNext();
+      state = isLast ? 'WAITING_RESULT' : 'WAITING_AUDIO_ACK';
     };
 
     timer = setTimeout(() => fail(`iFlytek evaluation timeout in state ${state}`), IFLYTEK_TIMEOUT_MS);
 
     ws.on('open', () => {
-      state = 'SENDING_FIRST';
-      const firstChunk = audio.subarray(0, Math.min(frameSize, audio.length));
-      offset = firstChunk.length;
+      trace('open');
+      state = 'SENDING_INIT';
       sendJson({
         common: { app_id: IFLYTEK_APP_ID },
-        business: { sub: 'ise', ent: 'cn_vip', category: 'read_sentence', cmd: 'auw', aus: 1, auf: 'audio/L16;rate=16000', aue: 'raw', rstcd: 'utf8', text },
-        data: { status: 1, data: firstChunk.toString('base64'), format: 'audio/L16;rate=16000', encoding: 'raw' }
+        business: { aue: 'raw', auf: 'audio/L16;rate=16000', category: 'read_sentence', cmd: 'ssb', ent: 'cn_vip', sub: 'ise', text, tte: 'utf-8', ttp_skip: true, extra_ability: 'multi_dimension' },
+        data: { status: 0 }
       });
+      const firstChunk = audio.subarray(0, Math.min(frameSize, audio.length));
+      offset = firstChunk.length;
+      state = 'SENDING_FIRST';
+      sendAudio(firstChunk, 1, offset >= audio.length ? 2 : 1);
       if (offset >= audio.length) state = 'WAITING_RESULT';
-      else { state = 'STREAMING'; scheduleNext(); }
+      else state = 'WAITING_AUDIO_ACK';
     });
 
     ws.on('message', raw => {
@@ -611,14 +633,23 @@ function evaluateWithIflytek({ audio, targetText }) {
       let packet;
       try { packet = JSON.parse(raw.toString('utf8')); }
       catch (_) { return fail('iFlytek returned invalid JSON'); }
-      if (packet.code !== undefined && Number(packet.code) !== 0) return fail(`iFlytek returned ${packet.code}: ${packet.message || ''}`);
+      if (packet.code !== undefined && Number(packet.code) !== 0) {
+        trace('error', { code: packet.code, message: packet.message || '', sid: packet.sid || '' });
+        return fail(`iFlytek returned ${packet.code}: ${packet.message || ''}`);
+      }
+      trace('received', { code: packet.code, sid: packet.sid || '', status: packet.data?.status ?? packet.status, hasData: Boolean(packet.data?.data) });
       if (packet.sid) results.push({ sid: packet.sid });
       if (packet.data?.data) results.push({ frame: packet, result: packet.data.data });
+      if (packet.data?.status === 1 && state === 'WAITING_AUDIO_ACK') {
+        if (offset < audio.length) sendNextFrame();
+      }
       if (packet.data?.status === 2 || packet.status === 2) {
         const lastResult = results.slice().reverse().find(item => item.result);
-        if (!lastResult) return fail('iFlytek returned final status without evaluation data');
-        const scores = extractIflytekScores(lastResult.result);
-        finish(null, { scores, rawResult: results });
+        if (lastResult) {
+          const scores = extractIflytekScores(lastResult.result);
+          return finish(null, { scores, rawResult: results });
+        }
+        if (state === 'WAITING_RESULT') return fail('iFlytek returned final status without evaluation data');
       }
     });
     ws.on('error', error => finish(error));
@@ -643,10 +674,11 @@ function buildSpeechScores(iflytek, targetText, durationMs) {
   };
 }
 
-async function scoreSpeechRequest({ audio, targetText, durationMs }) {
-  const evaluated = await evaluateWithIflytek({ audio, targetText });
-  const scores = buildSpeechScores(evaluated.scores, targetText, durationMs);
-  return { scores, transcript: '', feedback: null, provider: 'iflytek-ise', raw: evaluated.scores.raw };
+async function scoreSpeechRequest({ audio, targetText, durationMs, sampleRate }) {
+  const pcmStats = inspectPcm16(audio, sampleRate);
+  const evaluated = await evaluateWithIflytek({ audio, targetText, pcmStats });
+  const scores = buildSpeechScores(evaluated.scores, targetText, durationMs || pcmStats.durationMs);
+  return { scores, transcript: '', feedback: null, provider: 'iflytek-ise', audio: pcmStats, raw: evaluated.scores.raw };
 }
 
 function serveStatic(req, res) {
@@ -668,8 +700,15 @@ const server = http.createServer(async (req, res) => {
   catch (_) { return json(res, 400, { error: 'invalid url' }, origin); }
   const pathname = requestUrl.pathname;
   if (req.method === 'OPTIONS') {
-    const allowed = !origin || CORS_ORIGINS.includes(origin);
-    res.writeHead(allowed ? 204 : 403, allowed ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' } : {});
+    const allowOrigin = resolveAllowedOrigin(origin);
+    const allowed = !origin || Boolean(allowOrigin);
+    res.writeHead(allowed ? 204 : 403, allowed ? {
+      ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin } : {}),
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      Vary: 'Origin'
+    } : {});
     return res.end();
   }
   if (req.method === 'GET' && pathname === '/api/health') {
@@ -809,13 +848,16 @@ const server = http.createServer(async (req, res) => {
       const form = await parseMultipart(req);
       const targetText = String(form.fields.targetText || '').trim();
       const durationMs = Number(form.fields.durationMs || 0);
+      const sampleRate = Number(form.fields.sampleRate || 16000);
       const audio = form.files.audio?.buffer;
-      if (!audio || !audio.length || !targetText) return json(res, 400, { error: 'audio and targetText are required' }, origin);
-      if (targetText.length > 500) return json(res, 400, { error: 'targetText is too long' }, origin);
-      const result = await scoreSpeechRequest({ audio, targetText, durationMs });
+      if (!audio || !audio.length || !targetText) return json(res, 400, { error: 'audio and targetText are required', code: 'SPEECH_INPUT_REQUIRED' }, origin);
+      if (targetText.length > 500) return json(res, 400, { error: 'targetText is too long', code: 'SPEECH_TEXT_TOO_LONG' }, origin);
+      const result = await scoreSpeechRequest({ audio, targetText, durationMs, sampleRate });
       return json(res, 200, { ok: true, result }, origin);
     } catch (error) {
       console.error('[Speech] request failed:', error.message);
+      const inputError = /audio is empty|no audible speech|PCM audio|sample rate/i.test(error.message);
+      if (inputError) return json(res, 400, { ok: false, error: '音频格式或内容无效', code: 'SPEECH_AUDIO_INVALID', detail: error.message }, origin);
       const notConfigured = error.message.includes('credentials are not configured');
       const status = notConfigured ? 503 : 502;
       const detail = notConfigured ? '请在 .env 中配置 IFLYTEK_APP_ID、IFLYTEK_API_KEY、IFLYTEK_API_SECRET。' : error.message;
@@ -842,6 +884,6 @@ const server = http.createServer(async (req, res) => {
   return json(res, 405, { error: 'method not allowed' }, origin);
 });
 
-server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
+server.listen(PORT, HOST, () => {
   console.log(`拾光成长 AI server listening on http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
 });
