@@ -1,4 +1,4 @@
-﻿FROM node:22.17.1-slim AS runtime
+FROM node:22.17.1-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8787 \
