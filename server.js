@@ -343,6 +343,10 @@ async function callProvider(message) {
 
 /* ---- 沟通实战陪练：系统提示词 + 归一化 + 调用 ---- */
 const COACH_SCENARIO_MAX = 200;
+const COACH_MESSAGE_MAX = 2000;
+const COACH_HISTORY_MAX = 20;
+const COACH_MAX_ROUNDS = 6;
+const COACH_OPTION_MAX = 3;
 
 const COACH_PLAY_PROMPT = scenario => `你是「拾光成长」App 的沟通实战陪练。你要扮演下面方向里的「对方」，和用户进行一轮职场沟通对话，训练用户的社交沟通与领导沟通能力。
 
@@ -371,10 +375,12 @@ function coachHistoryToText(messages, scenario) {
   const lines = [];
   for (const m of messages) {
     if (!m || typeof m !== 'object') continue;
-    if (m.role === 'assistant' && m.content) lines.push('对方：' + m.content);
-    else if (m.role === 'user' && m.content) lines.push('用户：' + m.content);
+    const content = String(m.content || '').trim().slice(0, COACH_MESSAGE_MAX);
+    if (!content) continue;
+    if (m.role === 'assistant') lines.push('对方：' + content);
+    else if (m.role === 'user') lines.push('用户：' + content);
   }
-  return '方向：' + scenario + '\n' + lines.join('\n');
+  return '方向：' + String(scenario || '').slice(0, COACH_SCENARIO_MAX) + '\n' + lines.join('\n');
 }
 
 function coachParseJson(content) {
@@ -402,31 +408,32 @@ function coachClampScore(value) {
 
 function normalizeCoachStep(value) {
   if (!value || typeof value !== 'object') return null;
-  const content = String(value.content || value['对方'] || '').trim();
+  const content = String(value.content || value['对方'] || '').trim().slice(0, COACH_MESSAGE_MAX);
   let options = Array.isArray(value.options) ? value.options : (Array.isArray(value['选项']) ? value['选项'] : []);
-  options = options.map(String).filter(Boolean).slice(0, 4);
-  if (!content && options.length === 0) return null;
-  return { content, options: options.length ? options : ['好的，我明白了。', '我需要再想想。', '我们再商量一下。'] };
+  options = options.map(item => String(item || '').trim().slice(0, COACH_MESSAGE_MAX)).filter(Boolean).slice(0, COACH_OPTION_MAX);
+  if (!content) return null;
+  if (options.length < 2) return null;
+  return { content, options };
 }
 
 function normalizeCoachReport(value) {
   if (!value || typeof value !== 'object') return null;
   const social = value.social || value['社交沟通'] || {};
   const leadership = value.leadership || value['领导沟通'] || {};
-  const overview = String(value.overview || value['总体评价'] || '').trim();
+  const overview = String(value.overview || value['总体评价'] || '').trim().slice(0, 1000);
   return {
     overview,
     social: {
       score: coachClampScore(social.score ?? social['评分']),
-      strengths: coachToArr(social.strengths ?? social['亮点']).slice(0, 3),
-      weaknesses: coachToArr(social.weaknesses ?? social['不足']).slice(0, 3),
+      strengths: coachToArr(social.strengths ?? social['亮点']).map(v => v.slice(0, 300)).slice(0, 3),
+      weaknesses: coachToArr(social.weaknesses ?? social['不足']).map(v => v.slice(0, 300)).slice(0, 3),
     },
     leadership: {
       score: coachClampScore(leadership.score ?? leadership['评分']),
-      strengths: coachToArr(leadership.strengths ?? leadership['亮点']).slice(0, 3),
-      weaknesses: coachToArr(leadership.weaknesses ?? leadership['不足']).slice(0, 3),
+      strengths: coachToArr(leadership.strengths ?? leadership['亮点']).map(v => v.slice(0, 300)).slice(0, 3),
+      weaknesses: coachToArr(leadership.weaknesses ?? leadership['不足']).map(v => v.slice(0, 300)).slice(0, 3),
     },
-    improvements: coachToArr(value.improvements ?? value['改进方案']).slice(0, 5),
+    improvements: coachToArr(value.improvements ?? value['改进方案']).map(v => v.slice(0, 400)).slice(0, 5),
   };
 }
 
@@ -822,25 +829,33 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST' && pathname === '/api/ai/coach') {
     try {
-      const payload = JSON.parse(await readBody(req) || '{}');
+      const payload = JSON.parse(await readBody(req, 512 * 1024) || '{}');
       const scenario = String(payload.scenario || '').trim().slice(0, COACH_SCENARIO_MAX);
       const action = payload.action === 'evaluate' ? 'evaluate' : 'play';
-      const messages = Array.isArray(payload.messages) ? payload.messages.slice(-20) : [];
-      if (!scenario) return json(res, 400, { error: 'scenario is required' }, origin);
+      const rawMessages = Array.isArray(payload.messages) ? payload.messages : [];
+      const messages = rawMessages.slice(-COACH_HISTORY_MAX).map(message => ({
+        role: message && message.role === 'user' ? 'user' : 'assistant',
+        content: String(message && message.content || '').trim().slice(0, COACH_MESSAGE_MAX),
+      })).filter(message => message.content);
+      const userRoundCount = messages.filter(m => m.role === 'user').length;
+      if (!scenario) return json(res, 400, { ok: false, error: 'scenario is required', code: 'COACH_SCENARIO_REQUIRED' }, origin);
+      if (rawMessages.length > COACH_HISTORY_MAX) return json(res, 400, { ok: false, error: '陪练对话轮数过多，请重新开始', code: 'COACH_HISTORY_TOO_LONG' }, origin);
+      if (action === 'play' && userRoundCount >= COACH_MAX_ROUNDS) return json(res, 400, { ok: false, error: '本次陪练已达到最大轮数，请生成评估报告', code: 'COACH_MAX_ROUNDS' }, origin);
+      if (action === 'evaluate' && userRoundCount < 1) return json(res, 400, { ok: false, error: '至少完成一轮回应后才能评估', code: 'COACH_NOT_ENOUGH_ROUNDS' }, origin);
       const historyText = coachHistoryToText(messages, scenario);
       if (action === 'evaluate') {
         const report = normalizeCoachReport(await callCoachProvider(COACH_EVAL_PROMPT(scenario), historyText + '\n\n请基于以上对话，输出评估报告 JSON。'));
         if (!report) throw new Error('provider returned empty report');
-        return json(res, 200, { ok: true, report, meta: { source: 'provider', model: safeModelName } }, origin);
+        return json(res, 200, { ok: true, report, meta: { source: 'provider', model: safeModelName, rounds: userRoundCount } }, origin);
       }
       const step = normalizeCoachStep(await callCoachProvider(COACH_PLAY_PROMPT(scenario), historyText + '\n\n请继续，输出下一轮的 content 和 options。'));
-      if (!step) throw new Error('provider returned empty step');
-      const round = messages.filter(m => m && m.role === 'user').length + 1;
-      return json(res, 200, { ok: true, step: { ...step, round }, meta: { source: 'provider', model: safeModelName } }, origin);
+      if (!step) throw new Error('provider returned invalid step');
+      const round = userRoundCount + 1;
+      return json(res, 200, { ok: true, step: { ...step, round, maxRounds: COACH_MAX_ROUNDS, canEvaluate: userRoundCount > 0 }, meta: { source: 'provider', model: safeModelName } }, origin);
     } catch (error) {
       console.error('[Coach] request failed:', error.message);
-      const status = error.message === 'AI_API_KEY is not configured' ? 503 : 502;
-      return json(res, status, { error: 'AI service temporarily unavailable' }, origin);
+      const status = error instanceof SyntaxError ? 400 : error.message === 'AI_API_KEY is not configured' ? 503 : 502;
+      return json(res, status, { ok: false, error: status === 400 ? '请求数据格式无效' : 'AI service temporarily unavailable', code: status === 400 ? 'COACH_INVALID_JSON' : 'COACH_PROVIDER_ERROR' }, origin);
     }
   }
   if (req.method === 'POST' && pathname === '/api/ai/speech-score') {
