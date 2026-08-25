@@ -4,14 +4,15 @@
 
 ## 当前状态
 
-## 邮箱账号上线前置条件
+## 邮箱账号与 AI 上线前置条件
 
-邮箱登录依赖服务端账号库。首次把本功能合并到 `main` 前，必须：
+邮箱登录依赖服务端账号库和 SMTP。发布前必须：
 
-1. 在 GitHub Actions Secrets 中添加高强度 `AUTH_SECRET`，以及 `SMTP_USER`、`SMTP_PASS`（QQ 邮箱授权码）、`SMTP_FROM`；部署工作流会在镜像滚动更新前将它们写入 Sealos Deployment。工作流会按当前运行 `hhnhhw/shiguangchengzhang` 镜像的 Deployment 自动发现应用名称，避免 Sealos 应用重建后因旧名称导致 NotFound。
-2. 在 Sealos 当前 Deployment 中创建并挂载持久化卷到 `/app/data`；新建模板部署会自动声明名为 `<app>-auth-data` 的 1Gi PVC。
-3. 保持单副本（`replicas: 1`）。当前 JSON 账号库不支持多副本共享写入。
-4. 更新完成后访问 `/api/health`，确认 `emailLogin: true`，并完成一次注册、退出、重新登录验证。
+1. 在 GitHub Actions Secrets 中配置 `AUTH_SECRET`、`SMTP_USER`、`SMTP_PASS`、`SMTP_FROM`；QQ 邮箱的 `SMTP_PASS` 必须是授权码，不是登录密码。
+2. 配置 AI 所需的 `AI_BASE_URL`、`AI_MODEL`、`AI_API_KEY`，可选配置 `AI_TEMPERATURE` 和 `AI_TIMEOUT_MS`。
+3. 在 Sealos 当前工作负载中创建并挂载持久化卷到 `/app/data`；新建模板部署应声明名为 `<app>-auth-data` 的 1Gi PVC。
+4. 保持单副本（`replicas: 1`）。当前 JSON 账号库不支持多副本共享写入。
+5. 更新完成后访问 `/api/health`，确认 `emailLogin: true`、`emailConfigured: true`，并完成一次注册、邮箱验证码验证、退出、重新登录和重启后持久化验证。
 
 
 代码已成功推送到：
@@ -44,7 +45,20 @@ https://github.com/hhnhhw/shiguangchengzhang
 Settings → Secrets and variables → Actions → New repository secret
 ```
 
-新增以下 3 个仓库 Secret：
+必须配置以下仓库 Secret：
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+- `SEALOS_KUBECONFIG_B64`
+- `AUTH_SECRET`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_FROM`
+- `AI_BASE_URL`
+- `AI_MODEL`
+- `AI_API_KEY`
+
+可选配置：`AI_TEMPERATURE`、`AI_TIMEOUT_MS`。
 
 ### DOCKERHUB_USERNAME
 
