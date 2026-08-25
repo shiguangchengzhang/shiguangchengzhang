@@ -175,23 +175,36 @@ jobs:
         run: |
           set -euo pipefail
           body='{"message":"deployment smoke test: reply with one short sentence"}'
-          code=$(curl --silent --show-error --output /tmp/ai.json --write-out '%{http_code}' \
-            -H 'Content-Type: application/json' \
-            --data "$body" "$APP_URL/api/ai/chat" || true)
-          cat /tmp/ai.json
-          test "$code" = "200"
-          grep -q '"source":"provider"' /tmp/ai.json
+          last_code="000"
+          for attempt in {1..12}; do
+            last_code=$(curl --silent --show-error --connect-timeout 10 --max-time 60 --output /tmp/ai.json --write-out '%{http_code}' \
+              -H 'Content-Type: application/json' \
+              --data "$body" "$APP_URL/api/ai/chat" || true)
+            echo "AI smoke attempt $attempt/12 returned HTTP $last_code"
+            cat /tmp/ai.json 2>/dev/null || true
+            if [ "$last_code" = "200" ] && grep -q '"source":"provider"' /tmp/ai.json; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 12 ]; then
+              sleep 5
+            fi
+          done
+          echo "Public AI smoke test failed after retries (last HTTP $last_code)" >&2
+          echo "Health response:" >&2
+          curl --silent --show-error --connect-timeout 10 --max-time 30 "$APP_URL/api/health" >&2 || true
+          exit 1
 
       - name: Verify the public app
         shell: bash
         run: |
           set -euo pipefail
           for attempt in {1..12}; do
-            code=$(curl --silent --show-error --output /tmp/health.json --write-out '%{http_code}' "$APP_URL/api/health" || true)
+            code=$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output /tmp/health.json --write-out '%{http_code}' "$APP_URL/api/health" || true)
             if [ "$code" = "200" ] && grep -q '"ok":true' /tmp/health.json; then
               cat /tmp/health.json
               exit 0
             fi
+            echo "Health check attempt $attempt/12 returned HTTP $code"
             sleep 5
           done
           echo "Health check failed" >&2
