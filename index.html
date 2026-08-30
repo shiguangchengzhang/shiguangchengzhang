@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>&#x62FE;&#x5149;&#x6210;&#x957F; - &#x804C;&#x573A;&#x6210;&#x957F; AI &#x52A9;&#x624B;</title>
+<script>
+  // 检测是否运行在 HBuilderX / uni-app 打包的 App WebView（真机）中。
+  // 若是，则给 <html> 加 in-app 类，用于取消电脑端专用的「手机外框」，让页面铺满全屏。
+  (function () {
+    var ua = navigator.userAgent || '';
+    var inApp = /Html5Plus|uni-app|HBuilder/i.test(ua) || typeof plus !== 'undefined';
+    if (inApp) document.documentElement.classList.add('in-app');
+  })();
+</script>
 <style>
   :root {
     /* 品牌色 —— 深靛蓝（暮色微光） */
@@ -51,6 +60,14 @@
     box-shadow: 0 0 0 10px #1b1d22, 0 0 0 12px #3a3d44, 0 30px 60px rgba(20,24,40,.35);
     overflow: hidden;
     display: flex; flex-direction: column;
+  }
+
+  /* ---------- App 真机（HBuilderX WebView）下取消手机外框，铺满全屏 ---------- */
+  html.in-app, html.in-app body { height: 100%; background: var(--bg); }
+  html.in-app body { min-height: 100vh; padding: 0; }
+  html.in-app .phone {
+    width: 100%; height: 100vh; max-width: none; max-height: none;
+    border-radius: 0; box-shadow: none;
   }
 
   /* 状态栏 */
