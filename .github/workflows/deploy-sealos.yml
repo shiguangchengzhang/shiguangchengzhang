@@ -67,13 +67,45 @@ jobs:
           test "$(kubectl --insecure-skip-tls-verify config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = "$SEALOS_NAMESPACE"
           echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
 
+      - name: Validate Sealos kubeconfig access
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking Kubernetes API access in namespace $SEALOS_NAMESPACE"
+          kubectl --insecure-skip-tls-verify \
+            --request-timeout=20s \
+            -n "$SEALOS_NAMESPACE" get --raw=/version >/dev/null
+          can_get_deployments=$(kubectl --insecure-skip-tls-verify \
+            --request-timeout=20s \
+            auth can-i get deployments -n "$SEALOS_NAMESPACE")
+          if [ "$can_get_deployments" != "yes" ]; then
+            echo "Kubernetes credentials are invalid or lack permission to get deployments in $SEALOS_NAMESPACE (auth can-i: $can_get_deployments)." >&2
+            exit 1
+          fi
+
       - name: Discover current Sealos workload
         shell: bash
         run: |
           set -euo pipefail
           selector="cloud.sealos.io/app-deploy-manager=$SEALOS_APP"
-          statefulset=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get statefulset -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-          deployment=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get deployment -l "$selector" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          statefulset=""
+          deployment=""
+          if statefulset=$(kubectl --insecure-skip-tls-verify \
+              --request-timeout=20s \
+              -n "$SEALOS_NAMESPACE" get statefulset -l "$selector" \
+              -o jsonpath='{.items[0].metadata.name}'); then
+            :
+          else
+            statefulset=""
+          fi
+          if deployment=$(kubectl --insecure-skip-tls-verify \
+              --request-timeout=20s \
+              -n "$SEALOS_NAMESPACE" get deployment -l "$selector" \
+              -o jsonpath='{.items[0].metadata.name}'); then
+            :
+          else
+            deployment=""
+          fi
           if [ -n "$statefulset" ] && [ -n "$deployment" ]; then
             echo "Both StatefulSet and Deployment match $selector; refusing ambiguous rollout." >&2
             exit 1
@@ -85,10 +117,15 @@ jobs:
             workload="$deployment"
           else
             echo "No StatefulSet or Deployment found for selector: $selector" >&2
-            kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get statefulset,deployment -o wide
+            echo "Resources currently visible in namespace $SEALOS_NAMESPACE:" >&2
+            kubectl --insecure-skip-tls-verify --request-timeout=20s \
+              -n "$SEALOS_NAMESPACE" get statefulset,deployment -o wide
             exit 1
           fi
-          container=$(kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" get "$kind/$workload" -o jsonpath='{.spec.template.spec.containers[0].name}')
+          container=$(kubectl --insecure-skip-tls-verify \
+            --request-timeout=20s \
+            -n "$SEALOS_NAMESPACE" get "$kind/$workload" \
+            -o jsonpath='{.spec.template.spec.containers[0].name}')
           echo "SEALOS_KIND=$kind" >> "$GITHUB_ENV"
           echo "SEALOS_WORKLOAD=$workload" >> "$GITHUB_ENV"
           echo "SEALOS_CONTAINER=$container" >> "$GITHUB_ENV"

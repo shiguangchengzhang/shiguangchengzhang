@@ -11,3 +11,5 @@ hb-cloud-apk-wrapper/unpackage/
 hb-cloud-apk-wrapper/.hbuilderx/
 *.apk
 *.aab
+kubeconfig.yaml
+kubeconfig.yml

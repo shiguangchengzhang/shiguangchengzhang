@@ -134,7 +134,35 @@ https://shiguangchengzhang-fxaethpl.sealosbja.site
 https://shiguangchengzhang-fxaethpl.sealosbja.site/api/health
 ```
 
-## 回滚
+## 凭证失效排查
+
+如果工作流出现以下错误：
+
+```text
+The server has asked for the client to provide credentials
+You must be logged in to the server
+```
+
+这不是 Deployment selector 的问题，而是 `SEALOS_KUBECONFIG_B64` 中的 kubeconfig 已过期、被撤销、属于错误的 Sealos 区域/工作空间，或 Base64 内容复制不完整。请在本机重新下载当前北京工作空间 `ns-8zpzccfm` 的 kubeconfig，并先验证：
+
+```powershell
+$env:KUBECONFIG="$env:USERPROFILE\.sealos\kubeconfig"
+kubectl config current-context
+kubectl --insecure-skip-tls-verify -n ns-8zpzccfm get deployment
+```
+
+确认第二条命令可以正常返回资源后，重新生成并覆盖 GitHub Secret：
+
+```powershell
+[Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes("$env:USERPROFILE\.sealos\kubeconfig")
+)
+```
+
+在 GitHub 仓库进入 `Settings → Secrets and variables → Actions`，编辑 `SEALOS_KUBECONFIG_B64`，粘贴完整的单行 Base64 输出，然后重新运行工作流。不要提交 kubeconfig、Token 或 `.env` 文件。
+
+工作流现在会在资源发现前验证 Kubernetes API 和权限；如果凭证无效，会直接报告认证失败，不再把认证错误误报成“找不到 StatefulSet 或 Deployment”。
+
 
 如果新版本异常，可在 Sealos kubeconfig 有效时执行：
 
