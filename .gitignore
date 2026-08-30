@@ -1,7 +1,13 @@
-﻿# Runtime-generated account records must never be committed.
+# Runtime-generated account records must never be committed.
 data/
 node_modules/
 .env
 .env.*
 !.env.example
 *.log
+
+# HBuilderX generated build/cache output.
+hb-cloud-apk-wrapper/unpackage/
+hb-cloud-apk-wrapper/.hbuilderx/
+*.apk
+*.aab
