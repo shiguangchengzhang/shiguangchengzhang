@@ -1052,10 +1052,10 @@ function renderBadgePage() {
     </div>`;
 }
 
-/* 四维能力值：55 起步，该模块每完成一次 +8，封顶 100 */
+/* 四维能力值：0 起步，该模块每完成一次 +8，封顶 100 */
 function dimScore(mod) {
   const cnt = getStats().mods[mod] || 0;
-  return Math.min(100, 55 + cnt * 8);
+  return Math.min(100, cnt * 8);
 }
 function dimNote(v) {
   if (v >= 90) return '表现出色，继续保持';
