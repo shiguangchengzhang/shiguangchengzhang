@@ -867,13 +867,19 @@ const state = {
 /* ================= 真实统计层（localStorage 持久化 · 数据页真实数据来源） =================
    四维能力 / 近 7 天积分 / 成长指数 / 连续打卡 都从这里动态计算，不再写死。
    加分统一走 addPoints()，任务完成状态由 taskStore 持久化（刷新、跨天都正确）。 */
+
+/* 成长数据按账号隔离：未登录用 guest 命名空间，登录后用 sg_<key>_<userId>，互不串数据。
+   dataKey() 在所有数据读写处统一套用；sg_user（登录态）与隐私 key 不参与隔离。 */
+function currentUid() { const u = currentUser(); return (u && u.id) ? String(u.id) : 'guest'; }
+function dataKey(base) { return base + '_' + currentUid(); }
+
 const statStore = {
-  get() { try { return JSON.parse(localStorage.getItem('sg_stats') || 'null'); } catch (e) { return null; } },
-  set(v) { try { localStorage.setItem('sg_stats', JSON.stringify(v)); } catch (e) {} }
+  get() { try { return JSON.parse(localStorage.getItem(dataKey('sg_stats')) || 'null'); } catch (e) { return null; } },
+  set(v) { try { localStorage.setItem(dataKey('sg_stats'), JSON.stringify(v)); } catch (e) {} }
 };
 const taskStore = {
-  get() { try { return JSON.parse(localStorage.getItem('sg_tasks') || 'null'); } catch (e) { return null; } },
-  set(v) { try { localStorage.setItem('sg_tasks', JSON.stringify(v)); } catch (e) {} }
+  get() { try { return JSON.parse(localStorage.getItem(dataKey('sg_tasks')) || 'null'); } catch (e) { return null; } },
+  set(v) { try { localStorage.setItem(dataKey('sg_tasks'), JSON.stringify(v)); } catch (e) {} }
 };
 function dateKey(d) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -932,8 +938,8 @@ const BADGES = [
   { id:'points1000', icon:'🏅', name:'登峰造极', cond:'累计 1000 积分', test:s => s.total >= 1000, cheer:'1000 分，你配得上所有的掌声。', prog:s => ({ cur: Math.min(s.total, 1000), target: 1000 }) },
 ];
 const badgeStore = {
-  get() { try { return JSON.parse(localStorage.getItem('sg_badges') || '[]'); } catch (e) { return []; } },
-  set(v) { try { localStorage.setItem('sg_badges', JSON.stringify(v)); } catch (e) {} }
+  get() { try { return JSON.parse(localStorage.getItem(dataKey('sg_badges')) || '[]'); } catch (e) { return []; } },
+  set(v) { try { localStorage.setItem(dataKey('sg_badges'), JSON.stringify(v)); } catch (e) {} }
 };
 let badgeQueue = [], badgeShowing = false;
 function checkBadges(s) {
@@ -1722,7 +1728,7 @@ async function submitEmailAuth(event) {
     if (verify) { pendingAuthEmail = ''; $('auth-code').value = ''; setAuthMode('login', { message:data.message || '邮箱验证成功，请登录' }); $('auth-email').value = email; return; }
     if (forgot) { pendingAuthEmail = email; $('auth-code').value = ''; setAuthMode('reset', { email, message:data.message || '如账号存在，重置验证码已发送' }); $('auth-code').focus(); return; }
     if (reset) { pendingAuthEmail = ''; $('auth-code').value = ''; setAuthMode('login', { message:data.message || '密码已重置，请使用新密码登录' }); $('auth-email').value = email; return; }
-    setCurrentUser(data.user); closeAuth(); applyUser(); if (!getProfile()) openOnboarding(); toast('登录成功，欢迎回来 👋');
+    setCurrentUser(data.user); closeAuth(); refreshData(); if (!getProfile()) openOnboarding(); toast('登录成功，欢迎回来 👋');
   } catch (error) { showAuthError(error.message || '操作失败，请稍后重试'); }
   finally { button.disabled = false; button.textContent = authMode === 'reset' ? '保存新密码' : authMode === 'verify' ? '验证邮箱' : authMode === 'forgot' ? '发送重置验证码' : authMode === 'register' ? '创建账号并发送验证码' : '登录'; }
 }
@@ -1735,15 +1741,15 @@ function handleEmailActionFromUrl() {
   return true;
 }
 async function restoreSession() { try { const res = await fetch(AUTH_CONFIG.sessionEndpoint, { credentials:'same-origin' }); if (!res.ok) { clearUser(); applyUser(); return false; } const data = await res.json(); if (data.user) setCurrentUser(data.user); else clearUser(); applyUser(); return Boolean(data.user); } catch (e) { return Boolean(currentUser()); } }
-async function logout() { try { await fetch(AUTH_CONFIG.logoutEndpoint, { method:'POST', credentials:'same-origin' }); } catch (e) {} clearUser(); applyUser(); toast('已退出登录'); }
+async function logout() { try { await fetch(AUTH_CONFIG.logoutEndpoint, { method:'POST', credentials:'same-origin' }); } catch (e) {} clearUser(); refreshData(); toast('已退出登录'); }
 
 const ROLES = ['产品经理', '研发/程序员', '设计师', '运营', '市场营销', '销售', '人事HR', '财务', '客服', '项目经理', '数据分析', '教师', '医护', '管理者', '自由职业', '其他'];
 const YEARS = ['应届 / 1 年以内', '1-3 年', '3-5 年', '5-10 年', '10 年以上'];
 function getProfile() {
-  try { return JSON.parse(localStorage.getItem('sg_profile') || 'null'); } catch (e) { return null; }
+  try { return JSON.parse(localStorage.getItem(dataKey('sg_profile')) || 'null'); } catch (e) { return null; }
 }
 function setProfile(p) {
-  try { localStorage.setItem('sg_profile', JSON.stringify(p)); } catch (e) {}
+  try { localStorage.setItem(dataKey('sg_profile'), JSON.stringify(p)); } catch (e) {}
 }
 
 /* 进入 App 的引导：没画像 → 先登录再填画像；已登录没画像 → 直接填画像。
@@ -1795,12 +1801,16 @@ function saveProfile() {
 }
 
 /* ================= 初始化 ================= */
+/* 重新加载当前账号（或访客）的数据并刷新所有视图；登录态变化后都要调用一次 */
+function refreshData() {
+  const stats = getStats(); state.points = stats.total; state.streak = stats.streak;
+  syncTasksFromStore(); renderHome(); renderTasks(); applyUser(); renderBadges();
+}
 function startApp() {
   if (appStarted) return;
   appStarted = true;
-  const stats = getStats(); state.points = stats.total; state.streak = stats.streak;
-  syncTasksFromStore(); renderHome(); renderTasks(); applyUser(); renderBadges();
-  restoreSession().then(() => { if (!handleEmailActionFromUrl()) checkOnboarding(); });
+  refreshData();
+  restoreSession().then(() => { refreshData(); if (!handleEmailActionFromUrl()) checkOnboarding(); });
 }
 (function init() {
   const now = new Date();
@@ -1839,8 +1849,8 @@ function renderModule(name) {
 
 /* ---- 轻量本地存储 ---- */
 const modStore = {
-  get(k, d) { try { const v = localStorage.getItem('sg_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem('sg_' + k, JSON.stringify(v)); return true; } catch (e) { return false; } }
+  get(k, d) { try { const v = localStorage.getItem(dataKey('sg_' + k)); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(dataKey('sg_' + k), JSON.stringify(v)); return true; } catch (e) { return false; } }
 };
 function copyRaw(text, done) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2036,10 +2046,10 @@ const roleItems = [
    抽取优先级：① 岗位专属（roleItems 里 role 匹配当前岗位，放两份加权，抽中概率更高）
              → ② 通用条目（cognitionCategories，按「想提升方向」分类过滤）→ ③ 全量兜底。 */
 function getCogLog() {
-  try { return JSON.parse(localStorage.getItem('sg_cog_log') || 'null'); } catch (e) { return null; }
+  try { return JSON.parse(localStorage.getItem(dataKey('sg_cog_log')) || 'null'); } catch (e) { return null; }
 }
 function setCogLog(v) {
-  try { localStorage.setItem('sg_cog_log', JSON.stringify(v)); } catch (e) {}
+  try { localStorage.setItem(dataKey('sg_cog_log'), JSON.stringify(v)); } catch (e) {}
 }
 /* 统一按 key 查条目（通用 key:'catId:idx'，专属 key:'r:role:idx'），收藏列表用它 */
 function findCogByKey(k) {
@@ -2928,10 +2938,10 @@ function openPrivacyPanel() {
     <div class="card"><div class="card-title">AI 内容处理</div><div class="card-sub">AI 助手固定通过本项目服务端调用已配置的真实模型；服务暂时不可用时才使用本地规则库兜底。请勿输入密码、证件号、银行卡或商业秘密。</div><div style="margin-top:14px;">${profileRow('AI 状态', '始终开启 · 服务端代理')}</div></div>
     <div class="card"><div class="card-title">你的数据权利</div><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;" onclick="openPrivacyPolicy()">📄 查看隐私政策</button><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;" onclick="exportLocalData()">⬇ 导出本机成长数据</button>${u ? '<button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;" onclick="exportAccountData()">⬇ 导出账号信息</button><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;color:#E11D48;" onclick="deleteAccount()">删除邮箱账号</button>' : ''}<button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;color:#E11D48;" onclick="clearLocalData(false)">🗑 清除成长数据</button><button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px;color:#E11D48;" onclick="clearLocalData(true)">撤回同意并清除全部数据</button></div>`);
 }
-function localDataKeys(includePrivacy) { const keys = ['sg_stats','sg_tasks','sg_user','sg_profile','sg_badges','sg_cog_log','sg_cog_favs','sg_emotion_today','sg_diary','sg_coach_reports']; return includePrivacy ? keys.concat([PRIVACY_CONSENT_KEY, PRIVACY_PREFS_KEY]) : keys; }
+function localDataKeys(includePrivacy) { const keys = ['sg_stats','sg_tasks','sg_profile','sg_badges','sg_cog_log','sg_cog_favs','sg_emotion_today','sg_diary','sg_coach_reports'].map(dataKey).concat(['sg_user']); return includePrivacy ? keys.concat([PRIVACY_CONSENT_KEY, PRIVACY_PREFS_KEY]) : keys; }
 function exportLocalData() { if (!ensurePrivacyConsent()) return; const data = {}; localDataKeys(false).forEach(k => { try { const v = localStorage.getItem(k); if (v !== null) data[k] = JSON.parse(v); } catch(e) {} }); const blob = new Blob([JSON.stringify({ exportedAt:new Date().toISOString(), data }, null, 2)], { type:'application/json' }); const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href=url; a.download='拾光成长-本机数据.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000); }
 async function exportAccountData() { try { const res=await fetch(AUTH_CONFIG.accountExportEndpoint,{credentials:'same-origin'}), data=await res.json().catch(()=>({})); if(!res.ok) throw new Error(data.error || '账号信息暂时无法导出'); const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a'); a.href=url;a.download='拾光成长-账号信息.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); } catch(error) { toast(error.message || '账号信息暂时无法导出'); } }
-async function deleteAccount() { const u=currentUser(); if(!u || !u.email) return; const email=window.prompt('删除后账号将不可恢复。请输入当前账号邮箱以确认：'); if(email===null) return; try { const res=await fetch(AUTH_CONFIG.accountDeleteEndpoint,{method:'DELETE',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({confirmEmail:email})}),data=await res.json().catch(()=>({})); if(!res.ok) throw new Error(data.error || '账号删除失败'); clearUser();applyUser();closePanel();toast('账号已删除；本机成长数据仍由你掌控'); } catch(error) { toast(error.message || '账号删除失败'); } }
+async function deleteAccount() { const u=currentUser(); if(!u || !u.email) return; const email=window.prompt('删除后账号将不可恢复。请输入当前账号邮箱以确认：'); if(email===null) return; try { const res=await fetch(AUTH_CONFIG.accountDeleteEndpoint,{method:'DELETE',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({confirmEmail:email})}),data=await res.json().catch(()=>({})); if(!res.ok) throw new Error(data.error || '账号删除失败'); clearUser();refreshData();closePanel();toast('账号已删除；本机成长数据仍由你掌控'); } catch(error) { toast(error.message || '账号删除失败'); } }
 function clearLocalData(withdrawConsent) { const message=withdrawConsent ? '撤回隐私同意将清除本机保存的全部成长数据和授权设置，且无法恢复。确认继续吗？' : '将清除本机保存的成长数据（任务、偏好、日记等），且无法恢复。确认继续吗？'; if(!window.confirm(message)) return; localDataKeys(Boolean(withdrawConsent)).forEach(k=>{try{localStorage.removeItem(k)}catch(e){}}); location.reload(); }
 
 </script>
