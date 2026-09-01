@@ -314,8 +314,10 @@
     font-size: 24px; cursor: pointer; border: none;
     box-shadow: 0 8px 22px rgba(99,102,241,.42);
     transition: transform .15s ease;
+    touch-action: none; user-select: none; -webkit-user-select: none; /* 允许指针拖拽，阻止触屏滚动/选中 */
   }
   .fab:active { transform: scale(.92); }
+  .fab.dragging { transition: none; transform: scale(1.06); box-shadow: 0 10px 26px rgba(99,102,241,.55); cursor: grabbing; }
   .fab .ping {
     position: absolute; inset: 0; border-radius: 50%;
     border: 2px solid rgba(139,92,246,.6); animation: ping 2.2s ease-out infinite;
@@ -703,7 +705,7 @@
   <div class="toast" id="toast"></div>
 
   <!-- AI 助手悬浮球 -->
-  <button class="fab" onclick="openChat()" aria-label="AI成长助手">
+  <button class="fab" id="ai-fab" aria-label="AI成长助手（可拖动）">
     <span class="ping"></span><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/></svg>
   </button>
 
@@ -1052,20 +1054,28 @@ function renderBadgePage() {
     </div>`;
 }
 
-/* 四维能力值：0 起步，该模块每完成一次 +8，封顶 100 */
+/* 四维能力值（累计成就）：递减曲线 100×(1-e^(-次数/15))，只涨不跌，无限趋近 100 */
 function dimScore(mod) {
   const cnt = getStats().mods[mod] || 0;
-  return Math.min(100, cnt * 8);
+  return Math.round(100 * (1 - Math.exp(-cnt / 15)));
 }
 function dimNote(v) {
   if (v >= 90) return '表现出色，继续保持';
-  if (v >= 75) return '稳步提升中';
-  if (v >= 65) return '刚刚起步，坚持即进步';
+  if (v >= 70) return '稳步提升中';
+  if (v >= 40) return '渐入佳境，继续保持';
+  if (v > 0) return '刚刚起步，坚持即进步';
   return '待开启，去完成一次试试';
 }
+/* 成长指数（近期活跃）：近 30 天积分按日期加权，今天权重 1、30 天前≈0，久不打卡会自然回落 */
 function growthIndex() {
-  const ms = ['自律', '认知', '口才', '情绪'].map(dimScore);
-  return Math.round(ms.reduce((a, b) => a + b, 0) / ms.length);
+  const s = getStats();
+  let weighted = 0;
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const day = s.days[dateKey(d)];
+    if (day && day.points > 0) weighted += day.points * (30 - i) / 30;
+  }
+  return Math.min(100, Math.round(weighted / 5));
 }
 function totalDays() { return Object.keys(getStats().days).length; }
 function weeklyData() {
@@ -1872,6 +1882,71 @@ function startApp() {
   $('sb-time').textContent = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
   applyGreeting();
   if (hasPrivacyConsent()) startApp(); else openPrivacyConsent();
+})();
+
+/* ================= AI 悬浮球：自由拖拽 + 位置记忆 =================
+   拖动超过 6px 视为拖拽（不触发打开聊天），否则按点击处理；
+   位置存 localStorage（按用户），刷新/重开后保持；窗口尺寸变化时自动收回边界内。 */
+(function initFabDrag() {
+  const fab = $('ai-fab');
+  if (!fab) return;
+  const box = fab.parentElement;               // .phone 容器
+  const KEY = dataKey('sg_fab_pos');
+  const EDGE = 6;                              // 与边缘最小间距
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function applyPos(x, y) {
+    x = clamp(x, EDGE, box.clientWidth - fab.offsetWidth - EDGE);
+    y = clamp(y, EDGE, box.clientHeight - fab.offsetHeight - EDGE);
+    fab.style.left = x + 'px';
+    fab.style.top = y + 'px';
+    fab.style.right = 'auto';
+    fab.style.bottom = 'auto';
+  }
+  function currentPos() {
+    const fr = fab.getBoundingClientRect(), br = box.getBoundingClientRect();
+    return { x: fr.left - br.left, y: fr.top - br.top };
+  }
+
+  // 恢复上次记住的位置
+  try {
+    const p = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (p && typeof p.x === 'number' && typeof p.y === 'number') applyPos(p.x, p.y);
+  } catch (e) {}
+
+  let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+  fab.addEventListener('pointerdown', e => {
+    if (e.button != null && e.button !== 0) return;   // 忽略右键
+    dragging = true; moved = false;
+    sx = e.clientX; sy = e.clientY;
+    const p = currentPos(); ox = p.x; oy = p.y;
+    fab.classList.add('dragging');
+    try { fab.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  fab.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!moved && dx * dx + dy * dy > 36) moved = true;   // 6px 阈值，防误触
+    if (moved) applyPos(ox + dx, oy + dy);
+  });
+  fab.addEventListener('pointerup', () => {
+    if (!dragging) return;
+    dragging = false;
+    fab.classList.remove('dragging');
+    if (moved) {
+      const p = currentPos();
+      try { localStorage.setItem(KEY, JSON.stringify({ x: Math.round(p.x), y: Math.round(p.y) })); } catch (err) {}
+    }
+  });
+  fab.addEventListener('pointercancel', () => { dragging = false; fab.classList.remove('dragging'); });
+  // 区分点击与拖拽：拖过就不打开聊天面板；键盘回车/空格仍正常打开
+  fab.addEventListener('click', e => {
+    if (moved) { moved = false; e.preventDefault(); return; }
+    openChat();
+  });
+  // 窗口尺寸变化（含切入 in-app 全屏）时，保证球不跑到可视区外
+  window.addEventListener('resize', () => { const p = currentPos(); applyPos(p.x, p.y); });
 })();
 
 /* ================= 四大模块 · 完整版 ================= */
@@ -2936,7 +3011,7 @@ function openReportPanel() {
   const strong = dims[0], weak = dims[3];
   openPanel('成长报告', '本周（近 7 天）成长总结', '📊', `
     <div class="card" style="text-align:center;padding:22px 16px;">
-      <div style="font-size:13px;color:var(--ink-3);">本周成长指数</div>
+      <div style="font-size:13px;color:var(--ink-3);">成长指数（近 30 天活跃）</div>
       <div style="font-size:40px;font-weight:800;color:var(--brand);">${idx}<small style="font-size:15px;"> 分</small></div>
       <div style="font-size:12px;color:var(--ink-2);margin-top:4px;">本周累计 ${weekTotal} 分 · 完成 ${totalDone()} 次成长动作</div>
     </div>
