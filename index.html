@@ -570,6 +570,45 @@
   }
   .chip.on { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
   #onboard-save:disabled { opacity: .5; cursor: not-allowed; }
+  /* ---------- App 安全区：避开刘海、挖孔与底部手势条 ---------- */
+  :root {
+    --sg-safe-top: env(safe-area-inset-top, 0px);
+    --sg-safe-right: env(safe-area-inset-right, 0px);
+    --sg-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --sg-safe-left: env(safe-area-inset-left, 0px);
+  }
+  html.in-app body { min-height: 100dvh; padding: 0; overflow: hidden; }
+  html.in-app .phone { width: 100%; height: 100dvh; min-height: 100svh; max-width: none; max-height: none; padding: 0; border-radius: 0; box-shadow: none; }
+  html.in-app .screen {
+    padding-top: calc(8px + var(--sg-safe-top));
+    padding-right: calc(18px + var(--sg-safe-right));
+    padding-bottom: calc(96px + var(--sg-safe-bottom));
+    padding-left: calc(18px + var(--sg-safe-left));
+    scroll-padding-top: var(--sg-safe-top);
+  }
+  html.in-app .tabbar {
+    left: calc(14px + var(--sg-safe-left));
+    right: calc(14px + var(--sg-safe-right));
+    bottom: calc(14px + var(--sg-safe-bottom));
+  }
+  html.in-app .fab { right: calc(18px + var(--sg-safe-right)); bottom: calc(88px + var(--sg-safe-bottom)); }
+  html.in-app .chat-overlay,
+  html.in-app .module-overlay,
+  html.in-app .auth-overlay,
+  html.in-app .badge-unlock {
+    padding-top: var(--sg-safe-top);
+    padding-right: var(--sg-safe-right);
+    padding-bottom: var(--sg-safe-bottom);
+    padding-left: var(--sg-safe-left);
+  }
+  html.in-app .chat-body,
+  html.in-app .mod-body { scroll-padding-top: var(--sg-safe-top); }
+  html.in-app .auth-overlay { overflow-y: auto; }
+  html.in-app .auth-overlay .auth-card { max-height: calc(100% - 24px); overflow-y: auto; }
+  @supports not (height: 100dvh) {
+    html.in-app body { min-height: 100vh; }
+    html.in-app .phone { height: 100vh; min-height: 100vh; }
+  }
 </style>
 </head>
 <body>
@@ -2012,9 +2051,17 @@ function startApp() {
   const EDGE = 6;                              // 与边缘最小间距
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+  function safeInset(name) {
+    const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+    return Number.isFinite(value) ? value : 0;
+  }
   function applyPos(x, y) {
-    x = clamp(x, EDGE, box.clientWidth - fab.offsetWidth - EDGE);
-    y = clamp(y, EDGE, box.clientHeight - fab.offsetHeight - EDGE);
+    const safeLeft = safeInset('--sg-safe-left');
+    const safeRight = safeInset('--sg-safe-right');
+    const safeTop = safeInset('--sg-safe-top');
+    const safeBottom = safeInset('--sg-safe-bottom');
+    x = clamp(x, EDGE + safeLeft, box.clientWidth - fab.offsetWidth - EDGE - safeRight);
+    y = clamp(y, EDGE + safeTop, box.clientHeight - fab.offsetHeight - EDGE - safeBottom);
     fab.style.left = x + 'px';
     fab.style.top = y + 'px';
     fab.style.right = 'auto';
