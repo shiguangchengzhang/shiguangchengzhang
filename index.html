@@ -75,22 +75,10 @@
     position: absolute; inset: 0;
     overflow-y: auto; overflow-x: hidden;
     padding: 8px 18px 96px;
-    display: none;
-    opacity: 1;
-    visibility: hidden;
-    z-index: 0;
-    pointer-events: none;
-    transform: none;
-    transition: none;
+    opacity: 0; pointer-events: none; transform: translateY(8px);
+    transition: opacity .28s ease, transform .28s ease;
   }
-  .screen.active {
-    display: block;
-    opacity: 1;
-    visibility: visible;
-    z-index: 1;
-    pointer-events: auto;
-    transform: none;
-  }
+  .screen.active { opacity: 1; pointer-events: auto; transform: translateY(0); }
   .screen::-webkit-scrollbar { display: none; }
 
   /* 底部导航 */
@@ -582,59 +570,6 @@
   }
   .chip.on { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
   #onboard-save:disabled { opacity: .5; cursor: not-allowed; }
-  /* ---------- App 安全区：避开刘海、挖孔与底部手势条 ---------- */
-  :root {
-    --sg-safe-top: env(safe-area-inset-top, 0px);
-    --sg-safe-right: env(safe-area-inset-right, 0px);
-    --sg-safe-bottom: env(safe-area-inset-bottom, 0px);
-    --sg-safe-left: env(safe-area-inset-left, 0px);
-  }
-  html.in-app body { min-height: 100dvh; padding: 0; overflow: hidden; }
-  html.in-app .phone { width: 100%; height: 100dvh; min-height: 100svh; max-width: none; max-height: none; padding: 0; border-radius: 0; box-shadow: none; }
-  html.in-app .screen {
-    padding-top: calc(8px + var(--sg-safe-top));
-    padding-right: calc(18px + var(--sg-safe-right));
-    padding-bottom: calc(96px + var(--sg-safe-bottom));
-    padding-left: calc(18px + var(--sg-safe-left));
-    scroll-padding-top: var(--sg-safe-top);
-  }
-  html.in-app .tabbar {
-    left: calc(14px + var(--sg-safe-left));
-    right: calc(14px + var(--sg-safe-right));
-    bottom: calc(14px + var(--sg-safe-bottom));
-  }
-  html.in-app .fab { right: calc(18px + var(--sg-safe-right)); bottom: calc(88px + var(--sg-safe-bottom)); }
-  html.in-app .chat-overlay,
-  html.in-app .module-overlay,
-  html.in-app .auth-overlay,
-  html.in-app .badge-unlock {
-    padding-top: var(--sg-safe-top);
-    padding-right: var(--sg-safe-right);
-    padding-bottom: var(--sg-safe-bottom);
-    padding-left: var(--sg-safe-left);
-  }
-  html.in-app .chat-body,
-  html.in-app .mod-body { scroll-padding-top: var(--sg-safe-top); }
-  html.in-app .auth-overlay { overflow-y: auto; }
-  html.in-app .auth-overlay .auth-card { max-height: calc(100% - 24px); overflow-y: auto; }
-  @supports not (height: 100dvh) {
-    html.in-app body { min-height: 100vh; }
-    html.in-app .phone { height: 100vh; min-height: 100vh; }
-  }
-
-  /* Navigation layers are intentionally non-animated for Android WebView stability. */
-  .screen,
-  .chat-overlay,
-  .module-overlay,
-  .auth-overlay,
-  .badge-unlock,
-  .chat-overlay .chat-head,
-  .module-overlay .mod-head,
-  .auth-overlay .auth-card,
-  .badge-unlock .bu-card {
-    transition: none !important;
-    animation: none !important;
-  }
 </style>
 </head>
 <body>
@@ -1300,23 +1235,10 @@ function toast(msg) {
 }
 
 function go(tab) {
-  const target = $('screen-' + tab);
-  if (!target) return;
-  // Screen switching is deliberately synchronous. Android WebView can capture a
-  // compositor frame while opacity/transform transitions are running, which
-  // makes the whole page look like a white board. Never animate main screens.
-  document.querySelectorAll('.screen').forEach(s => {
-    const active = s === target;
-    s.classList.toggle('active', active);
-    s.style.display = active ? 'block' : 'none';
-    s.style.opacity = '1';
-    s.style.visibility = active ? 'visible' : 'hidden';
-    s.style.pointerEvents = active ? 'auto' : 'none';
-    s.style.transform = 'none';
-  });
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  const tabButton = document.querySelector(`.tab[data-tab="${tab}"]`);
-  if (tabButton) tabButton.classList.add('active');
+  $('screen-' + tab).classList.add('active');
+  document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
   if (tab === 'data') renderCharts();
 }
 
@@ -2090,17 +2012,9 @@ function startApp() {
   const EDGE = 6;                              // 与边缘最小间距
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  function safeInset(name) {
-    const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
-    return Number.isFinite(value) ? value : 0;
-  }
   function applyPos(x, y) {
-    const safeLeft = safeInset('--sg-safe-left');
-    const safeRight = safeInset('--sg-safe-right');
-    const safeTop = safeInset('--sg-safe-top');
-    const safeBottom = safeInset('--sg-safe-bottom');
-    x = clamp(x, EDGE + safeLeft, box.clientWidth - fab.offsetWidth - EDGE - safeRight);
-    y = clamp(y, EDGE + safeTop, box.clientHeight - fab.offsetHeight - EDGE - safeBottom);
+    x = clamp(x, EDGE, box.clientWidth - fab.offsetWidth - EDGE);
+    y = clamp(y, EDGE, box.clientHeight - fab.offsetHeight - EDGE);
     fab.style.left = x + 'px';
     fab.style.top = y + 'px';
     fab.style.right = 'auto';
