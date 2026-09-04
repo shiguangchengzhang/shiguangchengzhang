@@ -609,6 +609,15 @@
     html.in-app body { min-height: 100vh; }
     html.in-app .phone { height: 100vh; min-height: 100vh; }
   }
+  /* Android WebView: paint the active screen immediately; avoid a transparent compositor transition. */
+  .screen.active {
+    opacity: 1 !important;
+    visibility: visible !important;
+    z-index: 1 !important;
+    pointer-events: auto !important;
+    transform: none !important;
+    transition: none !important;
+  }
 </style>
 </head>
 <body>
