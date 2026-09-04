@@ -75,10 +75,22 @@
     position: absolute; inset: 0;
     overflow-y: auto; overflow-x: hidden;
     padding: 8px 18px 96px;
-    opacity: 0; pointer-events: none; transform: translateY(8px);
-    transition: opacity .28s ease, transform .28s ease;
+    display: none;
+    opacity: 1;
+    visibility: hidden;
+    z-index: 0;
+    pointer-events: none;
+    transform: none;
+    transition: none;
   }
-  .screen.active { opacity: 1; pointer-events: auto; transform: translateY(0); }
+  .screen.active {
+    display: block;
+    opacity: 1;
+    visibility: visible;
+    z-index: 1;
+    pointer-events: auto;
+    transform: none;
+  }
   .screen::-webkit-scrollbar { display: none; }
 
   /* 底部导航 */
@@ -609,14 +621,19 @@
     html.in-app body { min-height: 100vh; }
     html.in-app .phone { height: 100vh; min-height: 100vh; }
   }
-  /* Android WebView: paint the active screen immediately; avoid a transparent compositor transition. */
-  .screen.active {
-    opacity: 1 !important;
-    visibility: visible !important;
-    z-index: 1 !important;
-    pointer-events: auto !important;
-    transform: none !important;
+
+  /* Navigation layers are intentionally non-animated for Android WebView stability. */
+  .screen,
+  .chat-overlay,
+  .module-overlay,
+  .auth-overlay,
+  .badge-unlock,
+  .chat-overlay .chat-head,
+  .module-overlay .mod-head,
+  .auth-overlay .auth-card,
+  .badge-unlock .bu-card {
     transition: none !important;
+    animation: none !important;
   }
 </style>
 </head>
@@ -1283,10 +1300,23 @@ function toast(msg) {
 }
 
 function go(tab) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const target = $('screen-' + tab);
+  if (!target) return;
+  // Screen switching is deliberately synchronous. Android WebView can capture a
+  // compositor frame while opacity/transform transitions are running, which
+  // makes the whole page look like a white board. Never animate main screens.
+  document.querySelectorAll('.screen').forEach(s => {
+    const active = s === target;
+    s.classList.toggle('active', active);
+    s.style.display = active ? 'block' : 'none';
+    s.style.opacity = '1';
+    s.style.visibility = active ? 'visible' : 'hidden';
+    s.style.pointerEvents = active ? 'auto' : 'none';
+    s.style.transform = 'none';
+  });
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  $('screen-' + tab).classList.add('active');
-  document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+  const tabButton = document.querySelector(`.tab[data-tab="${tab}"]`);
+  if (tabButton) tabButton.classList.add('active');
   if (tab === 'data') renderCharts();
 }
 
