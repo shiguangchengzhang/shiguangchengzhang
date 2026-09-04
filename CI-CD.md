@@ -4,14 +4,15 @@
 
 ## 当前状态
 
-## 邮箱账号上线前置条件
+## 邮箱账号与 AI 上线前置条件
 
-邮箱登录依赖服务端账号库。首次把本功能合并到 `main` 前，必须：
+邮箱登录依赖服务端账号库和 SMTP。发布前必须：
 
-1. 在 GitHub Actions Secrets 中添加高强度 `AUTH_SECRET`，以及 `SMTP_USER`、`SMTP_PASS`（QQ 邮箱授权码）、`SMTP_FROM`；部署工作流会在镜像滚动更新前将它们写入 Sealos Deployment。工作流会按当前运行 `hhnhhw/shiguangchengzhang` 镜像的 Deployment 自动发现应用名称，避免 Sealos 应用重建后因旧名称导致 NotFound。
-2. 在 Sealos 当前 Deployment 中创建并挂载持久化卷到 `/app/data`；新建模板部署会自动声明名为 `<app>-auth-data` 的 1Gi PVC。
-3. 保持单副本（`replicas: 1`）。当前 JSON 账号库不支持多副本共享写入。
-4. 更新完成后访问 `/api/health`，确认 `emailLogin: true`，并完成一次注册、退出、重新登录验证。
+1. 在 GitHub Actions Secrets 中配置 `AUTH_SECRET`、`SMTP_USER`、`SMTP_PASS`、`SMTP_FROM`；QQ 邮箱的 `SMTP_PASS` 必须是授权码，不是登录密码。
+2. 配置 AI 所需的 `AI_BASE_URL`、`AI_MODEL`、`AI_API_KEY`，可选配置 `AI_TEMPERATURE` 和 `AI_TIMEOUT_MS`。
+3. 在 Sealos 当前工作负载中创建并挂载持久化卷到 `/app/data`；新建模板部署应声明名为 `<app>-auth-data` 的 1Gi PVC。
+4. 保持单副本（`replicas: 1`）。当前 JSON 账号库不支持多副本共享写入。
+5. 更新完成后访问 `/api/health`，确认 `emailLogin: true`、`emailConfigured: true`，并完成一次注册、邮箱验证码验证、退出、重新登录和重启后持久化验证。
 
 
 代码已成功推送到：
@@ -44,7 +45,20 @@ https://github.com/hhnhhw/shiguangchengzhang
 Settings → Secrets and variables → Actions → New repository secret
 ```
 
-新增以下 3 个仓库 Secret：
+必须配置以下仓库 Secret：
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+- `SEALOS_KUBECONFIG_B64`
+- `AUTH_SECRET`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_FROM`
+- `AI_BASE_URL`
+- `AI_MODEL`
+- `AI_API_KEY`
+
+可选配置：`AI_TEMPERATURE`、`AI_TIMEOUT_MS`。
 
 ### DOCKERHUB_USERNAME
 
@@ -120,7 +134,35 @@ https://shiguangchengzhang-fxaethpl.sealosbja.site
 https://shiguangchengzhang-fxaethpl.sealosbja.site/api/health
 ```
 
-## 回滚
+## 凭证失效排查
+
+如果工作流出现以下错误：
+
+```text
+The server has asked for the client to provide credentials
+You must be logged in to the server
+```
+
+这不是 Deployment selector 的问题，而是 `SEALOS_KUBECONFIG_B64` 中的 kubeconfig 已过期、被撤销、属于错误的 Sealos 区域/工作空间，或 Base64 内容复制不完整。请在本机重新下载当前北京工作空间 `ns-8zpzccfm` 的 kubeconfig，并先验证：
+
+```powershell
+$env:KUBECONFIG="$env:USERPROFILE\.sealos\kubeconfig"
+kubectl config current-context
+kubectl --insecure-skip-tls-verify -n ns-8zpzccfm get deployment
+```
+
+确认第二条命令可以正常返回资源后，重新生成并覆盖 GitHub Secret：
+
+```powershell
+[Convert]::ToBase64String(
+  [IO.File]::ReadAllBytes("$env:USERPROFILE\.sealos\kubeconfig")
+)
+```
+
+在 GitHub 仓库进入 `Settings → Secrets and variables → Actions`，编辑 `SEALOS_KUBECONFIG_B64`，粘贴完整的单行 Base64 输出，然后重新运行工作流。不要提交 kubeconfig、Token 或 `.env` 文件。
+
+工作流现在会在资源发现前验证 Kubernetes API 和权限；如果凭证无效，会直接报告认证失败，不再把认证错误误报成“找不到 StatefulSet 或 Deployment”。
+
 
 如果新版本异常，可在 Sealos kubeconfig 有效时执行：
 

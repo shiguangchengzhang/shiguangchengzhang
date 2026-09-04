@@ -10,6 +10,7 @@ const nodemailer = require('nodemailer');
 loadEnvFile(path.join(__dirname, '.env'));
 
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || '0.0.0.0';
 const AI_BASE_URL = (process.env.AI_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/$/, '');
 const AI_MODEL = process.env.AI_MODEL || 'deepseek-chat';
 const AI_API_KEY = process.env.AI_API_KEY || '';
@@ -76,8 +77,14 @@ function loadEnvFile(file) {
   }
 }
 
+function resolveAllowedOrigin(origin) {
+  if (!origin) return '';
+  if (CORS_ORIGINS.includes('*')) return origin;
+  return CORS_ORIGINS.includes(origin) ? origin : '';
+}
+
 function json(res, status, body, origin, extraHeaders = {}) {
-  const allowOrigin = origin && CORS_ORIGINS.includes(origin) ? origin : '';
+  const allowOrigin = resolveAllowedOrigin(origin);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -336,6 +343,10 @@ async function callProvider(message) {
 
 /* ---- 沟通实战陪练：系统提示词 + 归一化 + 调用 ---- */
 const COACH_SCENARIO_MAX = 200;
+const COACH_MESSAGE_MAX = 2000;
+const COACH_HISTORY_MAX = 20;
+const COACH_MAX_ROUNDS = 6;
+const COACH_OPTION_MAX = 3;
 
 const COACH_PLAY_PROMPT = scenario => `你是「拾光成长」App 的沟通实战陪练。你要扮演下面方向里的「对方」，和用户进行一轮职场沟通对话，训练用户的社交沟通与领导沟通能力。
 
@@ -364,10 +375,12 @@ function coachHistoryToText(messages, scenario) {
   const lines = [];
   for (const m of messages) {
     if (!m || typeof m !== 'object') continue;
-    if (m.role === 'assistant' && m.content) lines.push('对方：' + m.content);
-    else if (m.role === 'user' && m.content) lines.push('用户：' + m.content);
+    const content = String(m.content || '').trim().slice(0, COACH_MESSAGE_MAX);
+    if (!content) continue;
+    if (m.role === 'assistant') lines.push('对方：' + content);
+    else if (m.role === 'user') lines.push('用户：' + content);
   }
-  return '方向：' + scenario + '\n' + lines.join('\n');
+  return '方向：' + String(scenario || '').slice(0, COACH_SCENARIO_MAX) + '\n' + lines.join('\n');
 }
 
 function coachParseJson(content) {
@@ -395,31 +408,32 @@ function coachClampScore(value) {
 
 function normalizeCoachStep(value) {
   if (!value || typeof value !== 'object') return null;
-  const content = String(value.content || value['对方'] || '').trim();
+  const content = String(value.content || value['对方'] || '').trim().slice(0, COACH_MESSAGE_MAX);
   let options = Array.isArray(value.options) ? value.options : (Array.isArray(value['选项']) ? value['选项'] : []);
-  options = options.map(String).filter(Boolean).slice(0, 4);
-  if (!content && options.length === 0) return null;
-  return { content, options: options.length ? options : ['好的，我明白了。', '我需要再想想。', '我们再商量一下。'] };
+  options = options.map(item => String(item || '').trim().slice(0, COACH_MESSAGE_MAX)).filter(Boolean).slice(0, COACH_OPTION_MAX);
+  if (!content) return null;
+  if (options.length < 2) return null;
+  return { content, options };
 }
 
 function normalizeCoachReport(value) {
   if (!value || typeof value !== 'object') return null;
   const social = value.social || value['社交沟通'] || {};
   const leadership = value.leadership || value['领导沟通'] || {};
-  const overview = String(value.overview || value['总体评价'] || '').trim();
+  const overview = String(value.overview || value['总体评价'] || '').trim().slice(0, 1000);
   return {
     overview,
     social: {
       score: coachClampScore(social.score ?? social['评分']),
-      strengths: coachToArr(social.strengths ?? social['亮点']).slice(0, 3),
-      weaknesses: coachToArr(social.weaknesses ?? social['不足']).slice(0, 3),
+      strengths: coachToArr(social.strengths ?? social['亮点']).map(v => v.slice(0, 300)).slice(0, 3),
+      weaknesses: coachToArr(social.weaknesses ?? social['不足']).map(v => v.slice(0, 300)).slice(0, 3),
     },
     leadership: {
       score: coachClampScore(leadership.score ?? leadership['评分']),
-      strengths: coachToArr(leadership.strengths ?? leadership['亮点']).slice(0, 3),
-      weaknesses: coachToArr(leadership.weaknesses ?? leadership['不足']).slice(0, 3),
+      strengths: coachToArr(leadership.strengths ?? leadership['亮点']).map(v => v.slice(0, 300)).slice(0, 3),
+      weaknesses: coachToArr(leadership.weaknesses ?? leadership['不足']).map(v => v.slice(0, 300)).slice(0, 3),
     },
-    improvements: coachToArr(value.improvements ?? value['改进方案']).slice(0, 5),
+    improvements: coachToArr(value.improvements ?? value['改进方案']).map(v => v.slice(0, 400)).slice(0, 5),
   };
 }
 
@@ -521,16 +535,34 @@ function extractIflytekScores(result) {
     return value === null ? fallback : Math.max(0, Math.min(100, Math.round(value)));
   };
   return {
-    total: pick(['total_score', 'totalScore', 'overall_score']),
-    fluency: pick(['fluency_score', 'fluencyScore']),
-    completeness: pick(['integrity_score', 'integrityScore', 'completeness']),
-    pronunciation: pick(['phone_score', 'pronunciation_score', 'standard_score']),
-    tone: pick(['tone_score', 'emotion_score']),
+    total: pick(['@_total_score', 'total_score', 'totalScore', 'overall_score']),
+    fluency: pick(['@_fluency_score', 'fluency_score', 'fluencyScore']),
+    completeness: pick(['@_integrity_score', 'integrity_score', 'integrityScore', 'completeness']),
+    pronunciation: pick(['@_phone_score', 'phone_score', 'pronunciation_score', 'standard_score']),
+    tone: pick(['@_tone_score', 'tone_score', 'emotion_score']),
     raw: root
   };
 }
 
-function evaluateWithIflytek({ audio, targetText }) {
+function inspectPcm16(audio, sampleRate) {
+  if (!Buffer.isBuffer(audio) || audio.length < 320) throw new Error('audio is empty or too short');
+  if (audio.length % 2 !== 0) throw new Error('PCM audio must be 16-bit little-endian');
+  if (Number(sampleRate || 16000) !== 16000) throw new Error('PCM sample rate must be 16000Hz');
+  let sumSquares = 0;
+  let peak = 0;
+  const samples = audio.length / 2;
+  for (let i = 0; i < audio.length; i += 2) {
+    const value = audio.readInt16LE(i);
+    const absolute = Math.abs(value);
+    peak = Math.max(peak, absolute);
+    sumSquares += value * value;
+  }
+  const rms = Math.sqrt(sumSquares / samples);
+  if (peak < 80 || rms < 12) throw new Error('no audible speech detected in PCM audio');
+  return { samples, durationMs: Math.round(samples / 16000 * 1000), peak, rms: Math.round(rms) };
+}
+
+function evaluateWithIflytek({ audio, targetText, pcmStats }) {
   if (!IFLYTEK_APP_ID || !IFLYTEK_API_KEY || !IFLYTEK_API_SECRET) {
     throw new Error('IFLYTEK credentials are not configured');
   }
@@ -539,7 +571,7 @@ function evaluateWithIflytek({ audio, targetText }) {
     const results = [];
     const frameSize = 1280;
     const frameIntervalMs = 40;
-    const text = Buffer.from(`\ufeff${targetText}`, 'utf8').toString('base64');
+    const text = `\ufeff${targetText}`;
     let state = 'CONNECTING';
     let offset = 0;
     let timer = null;
@@ -563,47 +595,44 @@ function evaluateWithIflytek({ audio, targetText }) {
     };
 
     const fail = message => finish(new Error(message));
+    const trace = (event, extra = {}) => console.log(`[Speech][${state}] ${event}`, JSON.stringify(extra));
     const sendJson = payload => {
       if (finished || ws.readyState !== WebSocket.OPEN) return fail(`iFlytek socket is not open while in ${state}`);
       ws.send(JSON.stringify(payload));
+      trace('sent', { cmd: payload.business?.cmd, aus: payload.business?.aus, status: payload.data?.status, bytes: Buffer.byteLength(payload.data?.data || '', 'base64') });
     };
     const sendAudio = (chunk, aus, status) => {
       sendJson({
         business: { cmd: 'auw', aus },
-        data: { status, data: chunk.toString('base64'), format: 'audio/L16;rate=16000', encoding: 'raw' }
+        data: { status, data: chunk.toString('base64') }
       });
     };
-    const scheduleNext = () => {
-      if (!finished) frameTimer = setTimeout(sendNextFrame, frameIntervalMs);
-    };
     const sendNextFrame = () => {
-      if (finished || state !== 'STREAMING') return;
-      if (offset >= audio.length) {
-        state = 'WAITING_RESULT';
-        sendAudio(Buffer.alloc(0), 4, 2);
-        return;
-      }
+      if (finished || state !== 'WAITING_AUDIO_ACK') return;
       const chunk = audio.subarray(offset, Math.min(offset + frameSize, audio.length));
+      if (!chunk.length) return fail('audio stream ended before final frame');
       offset += chunk.length;
       const isLast = offset >= audio.length;
       sendAudio(chunk, isLast ? 4 : 2, isLast ? 2 : 1);
-      if (isLast) state = 'WAITING_RESULT';
-      else scheduleNext();
+      state = isLast ? 'WAITING_RESULT' : 'WAITING_AUDIO_ACK';
     };
 
     timer = setTimeout(() => fail(`iFlytek evaluation timeout in state ${state}`), IFLYTEK_TIMEOUT_MS);
 
     ws.on('open', () => {
-      state = 'SENDING_FIRST';
-      const firstChunk = audio.subarray(0, Math.min(frameSize, audio.length));
-      offset = firstChunk.length;
+      trace('open');
+      state = 'SENDING_INIT';
       sendJson({
         common: { app_id: IFLYTEK_APP_ID },
-        business: { sub: 'ise', ent: 'cn_vip', category: 'read_sentence', cmd: 'auw', aus: 1, auf: 'audio/L16;rate=16000', aue: 'raw', rstcd: 'utf8', text },
-        data: { status: 1, data: firstChunk.toString('base64'), format: 'audio/L16;rate=16000', encoding: 'raw' }
+        business: { aue: 'raw', auf: 'audio/L16;rate=16000', category: 'read_sentence', cmd: 'ssb', ent: 'cn_vip', sub: 'ise', text, tte: 'utf-8', ttp_skip: true, extra_ability: 'multi_dimension' },
+        data: { status: 0 }
       });
+      const firstChunk = audio.subarray(0, Math.min(frameSize, audio.length));
+      offset = firstChunk.length;
+      state = 'SENDING_FIRST';
+      sendAudio(firstChunk, 1, offset >= audio.length ? 2 : 1);
       if (offset >= audio.length) state = 'WAITING_RESULT';
-      else { state = 'STREAMING'; scheduleNext(); }
+      else state = 'WAITING_AUDIO_ACK';
     });
 
     ws.on('message', raw => {
@@ -611,14 +640,23 @@ function evaluateWithIflytek({ audio, targetText }) {
       let packet;
       try { packet = JSON.parse(raw.toString('utf8')); }
       catch (_) { return fail('iFlytek returned invalid JSON'); }
-      if (packet.code !== undefined && Number(packet.code) !== 0) return fail(`iFlytek returned ${packet.code}: ${packet.message || ''}`);
+      if (packet.code !== undefined && Number(packet.code) !== 0) {
+        trace('error', { code: packet.code, message: packet.message || '', sid: packet.sid || '' });
+        return fail(`iFlytek returned ${packet.code}: ${packet.message || ''}`);
+      }
+      trace('received', { code: packet.code, sid: packet.sid || '', status: packet.data?.status ?? packet.status, hasData: Boolean(packet.data?.data) });
       if (packet.sid) results.push({ sid: packet.sid });
       if (packet.data?.data) results.push({ frame: packet, result: packet.data.data });
+      if (packet.data?.status === 1 && state === 'WAITING_AUDIO_ACK') {
+        if (offset < audio.length) sendNextFrame();
+      }
       if (packet.data?.status === 2 || packet.status === 2) {
         const lastResult = results.slice().reverse().find(item => item.result);
-        if (!lastResult) return fail('iFlytek returned final status without evaluation data');
-        const scores = extractIflytekScores(lastResult.result);
-        finish(null, { scores, rawResult: results });
+        if (lastResult) {
+          const scores = extractIflytekScores(lastResult.result);
+          return finish(null, { scores, rawResult: results });
+        }
+        if (state === 'WAITING_RESULT') return fail('iFlytek returned final status without evaluation data');
       }
     });
     ws.on('error', error => finish(error));
@@ -643,10 +681,11 @@ function buildSpeechScores(iflytek, targetText, durationMs) {
   };
 }
 
-async function scoreSpeechRequest({ audio, targetText, durationMs }) {
-  const evaluated = await evaluateWithIflytek({ audio, targetText });
-  const scores = buildSpeechScores(evaluated.scores, targetText, durationMs);
-  return { scores, transcript: '', feedback: null, provider: 'iflytek-ise', raw: evaluated.scores.raw };
+async function scoreSpeechRequest({ audio, targetText, durationMs, sampleRate }) {
+  const pcmStats = inspectPcm16(audio, sampleRate);
+  const evaluated = await evaluateWithIflytek({ audio, targetText, pcmStats });
+  const scores = buildSpeechScores(evaluated.scores, targetText, durationMs || pcmStats.durationMs);
+  return { scores, transcript: '', feedback: null, provider: 'iflytek-ise', audio: pcmStats, raw: evaluated.scores.raw };
 }
 
 function serveStatic(req, res) {
@@ -668,8 +707,15 @@ const server = http.createServer(async (req, res) => {
   catch (_) { return json(res, 400, { error: 'invalid url' }, origin); }
   const pathname = requestUrl.pathname;
   if (req.method === 'OPTIONS') {
-    const allowed = !origin || CORS_ORIGINS.includes(origin);
-    res.writeHead(allowed ? 204 : 403, allowed ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', Vary: 'Origin' } : {});
+    const allowOrigin = resolveAllowedOrigin(origin);
+    const allowed = !origin || Boolean(allowOrigin);
+    res.writeHead(allowed ? 204 : 403, allowed ? {
+      ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin } : {}),
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      Vary: 'Origin'
+    } : {});
     return res.end();
   }
   if (req.method === 'GET' && pathname === '/api/health') {
@@ -783,25 +829,33 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST' && pathname === '/api/ai/coach') {
     try {
-      const payload = JSON.parse(await readBody(req) || '{}');
+      const payload = JSON.parse(await readBody(req, 512 * 1024) || '{}');
       const scenario = String(payload.scenario || '').trim().slice(0, COACH_SCENARIO_MAX);
       const action = payload.action === 'evaluate' ? 'evaluate' : 'play';
-      const messages = Array.isArray(payload.messages) ? payload.messages.slice(-20) : [];
-      if (!scenario) return json(res, 400, { error: 'scenario is required' }, origin);
+      const rawMessages = Array.isArray(payload.messages) ? payload.messages : [];
+      const messages = rawMessages.slice(-COACH_HISTORY_MAX).map(message => ({
+        role: message && message.role === 'user' ? 'user' : 'assistant',
+        content: String(message && message.content || '').trim().slice(0, COACH_MESSAGE_MAX),
+      })).filter(message => message.content);
+      const userRoundCount = messages.filter(m => m.role === 'user').length;
+      if (!scenario) return json(res, 400, { ok: false, error: 'scenario is required', code: 'COACH_SCENARIO_REQUIRED' }, origin);
+      if (rawMessages.length > COACH_HISTORY_MAX) return json(res, 400, { ok: false, error: '陪练对话轮数过多，请重新开始', code: 'COACH_HISTORY_TOO_LONG' }, origin);
+      if (action === 'play' && userRoundCount >= COACH_MAX_ROUNDS) return json(res, 400, { ok: false, error: '本次陪练已达到最大轮数，请生成评估报告', code: 'COACH_MAX_ROUNDS' }, origin);
+      if (action === 'evaluate' && userRoundCount < 1) return json(res, 400, { ok: false, error: '至少完成一轮回应后才能评估', code: 'COACH_NOT_ENOUGH_ROUNDS' }, origin);
       const historyText = coachHistoryToText(messages, scenario);
       if (action === 'evaluate') {
         const report = normalizeCoachReport(await callCoachProvider(COACH_EVAL_PROMPT(scenario), historyText + '\n\n请基于以上对话，输出评估报告 JSON。'));
         if (!report) throw new Error('provider returned empty report');
-        return json(res, 200, { ok: true, report, meta: { source: 'provider', model: safeModelName } }, origin);
+        return json(res, 200, { ok: true, report, meta: { source: 'provider', model: safeModelName, rounds: userRoundCount } }, origin);
       }
       const step = normalizeCoachStep(await callCoachProvider(COACH_PLAY_PROMPT(scenario), historyText + '\n\n请继续，输出下一轮的 content 和 options。'));
-      if (!step) throw new Error('provider returned empty step');
-      const round = messages.filter(m => m && m.role === 'user').length + 1;
-      return json(res, 200, { ok: true, step: { ...step, round }, meta: { source: 'provider', model: safeModelName } }, origin);
+      if (!step) throw new Error('provider returned invalid step');
+      const round = userRoundCount + 1;
+      return json(res, 200, { ok: true, step: { ...step, round, maxRounds: COACH_MAX_ROUNDS, canEvaluate: userRoundCount > 0 }, meta: { source: 'provider', model: safeModelName } }, origin);
     } catch (error) {
       console.error('[Coach] request failed:', error.message);
-      const status = error.message === 'AI_API_KEY is not configured' ? 503 : 502;
-      return json(res, status, { error: 'AI service temporarily unavailable' }, origin);
+      const status = error instanceof SyntaxError ? 400 : error.message === 'AI_API_KEY is not configured' ? 503 : 502;
+      return json(res, status, { ok: false, error: status === 400 ? '请求数据格式无效' : 'AI service temporarily unavailable', code: status === 400 ? 'COACH_INVALID_JSON' : 'COACH_PROVIDER_ERROR' }, origin);
     }
   }
   if (req.method === 'POST' && pathname === '/api/ai/speech-score') {
@@ -809,13 +863,16 @@ const server = http.createServer(async (req, res) => {
       const form = await parseMultipart(req);
       const targetText = String(form.fields.targetText || '').trim();
       const durationMs = Number(form.fields.durationMs || 0);
+      const sampleRate = Number(form.fields.sampleRate || 16000);
       const audio = form.files.audio?.buffer;
-      if (!audio || !audio.length || !targetText) return json(res, 400, { error: 'audio and targetText are required' }, origin);
-      if (targetText.length > 500) return json(res, 400, { error: 'targetText is too long' }, origin);
-      const result = await scoreSpeechRequest({ audio, targetText, durationMs });
+      if (!audio || !audio.length || !targetText) return json(res, 400, { error: 'audio and targetText are required', code: 'SPEECH_INPUT_REQUIRED' }, origin);
+      if (targetText.length > 500) return json(res, 400, { error: 'targetText is too long', code: 'SPEECH_TEXT_TOO_LONG' }, origin);
+      const result = await scoreSpeechRequest({ audio, targetText, durationMs, sampleRate });
       return json(res, 200, { ok: true, result }, origin);
     } catch (error) {
       console.error('[Speech] request failed:', error.message);
+      const inputError = /audio is empty|no audible speech|PCM audio|sample rate/i.test(error.message);
+      if (inputError) return json(res, 400, { ok: false, error: '音频格式或内容无效', code: 'SPEECH_AUDIO_INVALID', detail: error.message }, origin);
       const notConfigured = error.message.includes('credentials are not configured');
       const status = notConfigured ? 503 : 502;
       const detail = notConfigured ? '请在 .env 中配置 IFLYTEK_APP_ID、IFLYTEK_API_KEY、IFLYTEK_API_SECRET。' : error.message;
@@ -842,6 +899,6 @@ const server = http.createServer(async (req, res) => {
   return json(res, 405, { error: 'method not allowed' }, origin);
 });
 
-server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
+server.listen(PORT, HOST, () => {
   console.log(`拾光成长 AI server listening on http://${process.env.HOST || '0.0.0.0'}:${PORT}`);
 });
