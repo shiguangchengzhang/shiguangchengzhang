@@ -1,9 +1,9 @@
-﻿# 拾光成长 HBuilderX 云打包壳工程
+# 拾光成长 HBuilderX 云打包壳工程
 
 ## 作用
 
 原项目是 Node.js 服务 + 单页 HTML，不是可直接在 HBuilderX 中“发行-原生App-云打包”的 uni-app 工程。
-本目录是一个 uni-app WebView 壳：启动时直接承载随 APK 打包的本机页面，避免因网络、证书或线上服务异常出现空白屏；需要账号、AI 和语音服务时仍通过线上 Node.js API。
+本目录是一个最小 uni-app WebView 壳：APK 只负责承载线上前端，业务 API 仍由 Sealos 上的 Node.js 服务提供。
 
 线上地址已配置为：
 
@@ -19,10 +19,8 @@
 
 ## 注意事项
 
-- APK 启动时直接加载 `hybrid/html/index.html` 本机页面，因此即使没有网络也能正常显示首页、任务、数据和“我的”界面；联网后再使用账号、AI 和语音相关能力。
+- 这是在线 WebView 包，需要联网；离线时不能打开业务页面。
 - 录音功能依赖 HTTPS 页面和 Android `RECORD_AUDIO` 权限；首次录音时系统会弹出授权提示。
 - 不要把 `AI_API_KEY`、SMTP 密码或科大讯飞密钥写入这个壳工程；这些密钥必须继续留在 Sealos 服务端环境变量中。
 - 更换线上域名时，只需修改 `pages/index/index.vue` 中的 `appUrl`。
 - 如要提交应用市场，还需要补充隐私政策、权限用途、应用图标/启动图和正式签名证书。
-
-
