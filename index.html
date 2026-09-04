@@ -9,29 +9,8 @@
   // 若是，则给 <html> 加 in-app 类，用于取消电脑端专用的「手机外框」，让页面铺满全屏。
   (function () {
     var ua = navigator.userAgent || '';
-    var root = document.documentElement;
-    function syncNativeInsets() {
-      var top = 0, bottom = 0;
-      try {
-        var plusApi = window.plus;
-        if (plusApi && plusApi.navigator && typeof plusApi.navigator.getStatusbarHeight === 'function') {
-          top = Number(plusApi.navigator.getStatusbarHeight()) || 0;
-        }
-        if (plusApi && plusApi.navigator && typeof plusApi.navigator.getSafeAreaInsets === 'function') {
-          var insets = plusApi.navigator.getSafeAreaInsets() || {};
-          top = Math.max(top, Number(insets.top) || 0);
-          bottom = Math.max(bottom, Number(insets.bottom) || 0);
-        }
-      } catch (e) {}
-      root.style.setProperty('--sg-native-safe-top', top + 'px');
-      root.style.setProperty('--sg-native-safe-bottom', bottom + 'px');
-    }
-    function enableAppMode() {
-      root.classList.add('in-app');
-      syncNativeInsets();
-    }
-    if (/Html5Plus|uni-app|HBuilder|5\+Runtime/i.test(ua) || typeof window.plus !== 'undefined') enableAppMode();
-    document.addEventListener('plusready', enableAppMode, { once: true });
+    var inApp = /Html5Plus|uni-app|HBuilder/i.test(ua) || typeof plus !== 'undefined';
+    if (inApp) document.documentElement.classList.add('in-app');
   })();
 </script>
 <style>
@@ -89,20 +68,17 @@
   html.in-app .phone {
     width: 100%; height: 100vh; max-width: none; max-height: none;
     border-radius: 0; box-shadow: none;
-    padding-top: env(safe-area-inset-top, 0px);
   }
   /* 刘海屏 / 挖孔屏安全区：真机全屏 WebView 下，把假状态栏往下让出刘海边 */
-  /* 状态栏 */
-  /* 屏幕容器 */
   .screens { flex: 1; position: relative; overflow: hidden; }
   .screen {
     position: absolute; inset: 0;
     overflow-y: auto; overflow-x: hidden;
     padding: 8px 18px 96px;
-    display: none; opacity: 1; visibility: hidden; z-index: 0;
-    pointer-events: none; transform: none;
+    opacity: 0; pointer-events: none; transform: translateY(8px);
+    transition: opacity .28s ease, transform .28s ease;
   }
-  .screen.active { display: block; opacity: 1 !important; visibility: visible !important; z-index: 1 !important; pointer-events: auto !important; transform: none !important; }
+  .screen.active { opacity: 1; pointer-events: auto; transform: translateY(0); }
   .screen::-webkit-scrollbar { display: none; }
 
   /* 底部导航 */
@@ -269,7 +245,6 @@
   .chart-empty b { display: block; color: var(--ink-2); font-size: 14px; font-weight: 700; margin-bottom: 2px; }
 
   /* ---------- 我的页 ---------- */
-
   /* ---------- growth points history ---------- */
   .growth-history-card { overflow: hidden; }
   .growth-history-heading { gap: 10px; align-items: flex-start; }
@@ -386,14 +361,7 @@
     flex: 0 0 auto; background: linear-gradient(135deg, #8B5CF6, #6366F1); color: #fff;
     padding: 12px 16px 14px; display: flex; align-items: center; gap: 10px;
   }
-  .chat-head .back {
-    width: 44px; height: 44px; flex: 0 0 44px;
-    display: inline-flex; align-items: center; justify-content: center;
-    margin: -4px 0 -4px -8px; padding: 0;
-    cursor: pointer; font-size: 30px; line-height: 1;
-    font-family: Arial, sans-serif; background: none; border: none; color: #fff;
-    position: relative; z-index: 2; touch-action: manipulation;
-  }
+  .chat-head .back { cursor: pointer; font-size: 20px; line-height: 1; background: none; border: none; color: #fff; }
   .chat-head .c-avatar { width: 34px; height: 34px; border-radius: 50%; background: rgba(255,255,255,.2); display: flex; align-items: center; justify-content: center; font-size: 17px; }
   .chat-head .c-name { font-weight: 800; font-size: 15px; }
   .chat-head .c-sub { font-size: 12px; opacity: .85; margin-top: 1px; }
@@ -457,14 +425,7 @@
     flex: 0 0 auto; color: #fff; padding: 14px 16px 16px;
     display: flex; align-items: center; gap: 11px;
   }
-  .mod-head .back {
-    width: 44px; height: 44px; flex: 0 0 44px;
-    display: inline-flex; align-items: center; justify-content: center;
-    margin: -4px 0 -4px -8px; padding: 0;
-    cursor: pointer; font-size: 30px; line-height: 1;
-    font-family: Arial, sans-serif; background: none; border: none; color: #fff;
-    position: relative; z-index: 2; touch-action: manipulation;
-  }
+  .mod-head .back { cursor: pointer; font-size: 22px; line-height: 1; background: none; border: none; color: #fff; }
   .mod-head .m-ico { width: 38px; height: 38px; border-radius: 12px; background: rgba(255,255,255,.22); display: flex; align-items: center; justify-content: center; font-size: 19px; flex: 0 0 38px; }
   .mod-head .mod-title { font-weight: 800; font-size: 16.5px; }
   .mod-head .mod-sub { font-size: 12px; opacity: .85; margin-top: 2px; }
@@ -611,43 +572,37 @@
   #onboard-save:disabled { opacity: .5; cursor: not-allowed; }
   /* ---------- App 安全区：避开刘海、挖孔与底部手势条 ---------- */
   :root {
-    --sg-native-safe-top: 0px;
-    --sg-native-safe-bottom: 0px;
+    --sg-safe-top: env(safe-area-inset-top, 0px);
+    --sg-safe-right: env(safe-area-inset-right, 0px);
+    --sg-safe-bottom: env(safe-area-inset-bottom, 0px);
+    --sg-safe-left: env(safe-area-inset-left, 0px);
   }
-  html.in-app { --sg-safe-top-fallback: 24px; }
-  html:not(.in-app) { --sg-safe-top-fallback: 0px; }
   html.in-app body { min-height: 100dvh; padding: 0; overflow: hidden; }
   html.in-app .phone { width: 100%; height: 100dvh; min-height: 100svh; max-width: none; max-height: none; padding: 0; border-radius: 0; box-shadow: none; }
-  .screens { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-  .screen {
-    padding-top: calc(8px + max(env(safe-area-inset-top, 0px), var(--sg-native-safe-top, 0px), var(--sg-safe-top-fallback, 0px)));
-    padding-right: calc(18px + env(safe-area-inset-right, 0px));
-    padding-bottom: calc(96px + max(env(safe-area-inset-bottom, 0px), var(--sg-native-safe-bottom, 0px)));
-    padding-left: calc(18px + env(safe-area-inset-left, 0px));
-    scroll-padding-top: max(env(safe-area-inset-top, 0px), var(--sg-native-safe-top, 0px), var(--sg-safe-top-fallback, 0px));
-    display: none; opacity: 1; visibility: hidden; z-index: 0; transition: none;
+  html.in-app .screen {
+    padding-top: calc(8px + var(--sg-safe-top));
+    padding-right: calc(18px + var(--sg-safe-right));
+    padding-bottom: calc(96px + var(--sg-safe-bottom));
+    padding-left: calc(18px + var(--sg-safe-left));
+    scroll-padding-top: var(--sg-safe-top);
   }
-  .screen.active { display: block; opacity: 1 !important; visibility: visible !important; z-index: 1 !important; }
   html.in-app .tabbar {
-    left: calc(14px + env(safe-area-inset-left, 0px));
-    right: calc(14px + env(safe-area-inset-right, 0px));
-    bottom: calc(14px + max(env(safe-area-inset-bottom, 0px), var(--sg-native-safe-bottom, 0px)));
+    left: calc(14px + var(--sg-safe-left));
+    right: calc(14px + var(--sg-safe-right));
+    bottom: calc(14px + var(--sg-safe-bottom));
   }
-  html.in-app .fab {
-    right: calc(18px + env(safe-area-inset-right, 0px));
-    bottom: calc(88px + max(env(safe-area-inset-bottom, 0px), var(--sg-native-safe-bottom, 0px)));
-  }
+  html.in-app .fab { right: calc(18px + var(--sg-safe-right)); bottom: calc(88px + var(--sg-safe-bottom)); }
   html.in-app .chat-overlay,
   html.in-app .module-overlay,
   html.in-app .auth-overlay,
   html.in-app .badge-unlock {
-    padding-top: max(env(safe-area-inset-top, 0px), var(--sg-native-safe-top, 0px), var(--sg-safe-top-fallback, 0px));
-    padding-right: env(safe-area-inset-right, 0px);
-    padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--sg-native-safe-bottom, 0px));
-    padding-left: env(safe-area-inset-left, 0px);
+    padding-top: var(--sg-safe-top);
+    padding-right: var(--sg-safe-right);
+    padding-bottom: var(--sg-safe-bottom);
+    padding-left: var(--sg-safe-left);
   }
   html.in-app .chat-body,
-  html.in-app .mod-body { scroll-padding-top: max(env(safe-area-inset-top, 0px), var(--sg-native-safe-top, 0px), var(--sg-safe-top-fallback, 0px)); }
+  html.in-app .mod-body { scroll-padding-top: var(--sg-safe-top); }
   html.in-app .auth-overlay { overflow-y: auto; }
   html.in-app .auth-overlay .auth-card { max-height: calc(100% - 24px); overflow-y: auto; }
   @supports not (height: 100dvh) {
@@ -765,8 +720,6 @@
         <div class="history-detail-list" id="growth-month-details"></div>
         <div class="history-footnote">积分记录保存在当前浏览器中，完成任务后会自动归入当天。</div>
       </div>
-    </div>
-
     <!-- ============ 我的页 ============ -->
     <div class="screen" id="screen-profile">
       <div class="card profile">
@@ -834,7 +787,7 @@
   <!-- ============ 四大模块详情页 ============ -->
   <div class="module-overlay" id="mod-discipline">
     <div class="mod-head" style="background:linear-gradient(135deg,#3E8BEC,#2A78D6);">
-      <button class="back" type="button" aria-label="返回" onclick="closeModule()">‹</button>
+      <button class="back" onclick="closeModule()">‹</button>
       <div class="m-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></div>
       <div><div class="mod-title">极简自律</div><div class="mod-sub">微任务 · 专注计时 · 专治拖延</div></div>
     </div>
@@ -843,7 +796,7 @@
 
   <div class="module-overlay" id="mod-cognition">
     <div class="mod-head" style="background:linear-gradient(135deg,#F08A4B,#EB6834);">
-      <button class="back" type="button" aria-label="返回" onclick="closeModule()">‹</button>
+      <button class="back" onclick="closeModule()">‹</button>
       <div class="m-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1.1.8 1.9h5.4c0-.8.3-1.5.8-1.9A6 6 0 0 0 12 3z"/></svg></div>
       <div><div class="mod-title">职场认知</div><div class="mod-sub">每日干货 · 思维库 · 六维体系</div></div>
     </div>
@@ -852,7 +805,7 @@
 
   <div class="module-overlay" id="mod-speech">
     <div class="mod-head" style="background:linear-gradient(135deg,#2CC492,#1BAF7A);">
-      <button class="back" type="button" aria-label="返回" onclick="closeModule()">‹</button>
+      <button class="back" onclick="closeModule()">‹</button>
       <div class="m-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg></div>
       <div><div class="mod-title">口才训练</div><div class="mod-sub">1 分钟开口 · AI 评分 · 话术库</div></div>
     </div>
@@ -861,7 +814,7 @@
 
   <div class="module-overlay" id="mod-emotion">
     <div class="mod-head" style="background:linear-gradient(135deg,#F09ABE,#E87BA4);">
-      <button class="back" type="button" aria-label="返回" onclick="closeModule()">‹</button>
+      <button class="back" onclick="closeModule()">‹</button>
       <div class="m-ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
       <div><div class="mod-title">情绪自愈</div><div class="mod-sub">情绪记录 · 智能疏导 · 反内耗</div></div>
     </div>
@@ -1141,18 +1094,11 @@ function toggleBadgePreview() {
 }
 
 /* 勋章墙（独立页面）：展示全部勋章 + 解锁进度条 */
-function openBadgePage(options = {}) {
+function openBadgePage() {
   renderBadgePage();
   const o = $('badge-page'); if (o) o.classList.add('open');
-  activeBadgeHistory = true;
-  if (options.pushHistory !== false) pushOverlayHistory('overlay', 'badge', overlayHistoryUrl('badge'));
 }
-function closeBadgePage(options = {}) {
-  const shouldGoBack = !options.fromHistory && activeBadgeHistory && history.state && history.state.sgOverlay === 'badge';
-  const o = $('badge-page'); if (o) o.classList.remove('open');
-  activeBadgeHistory = false;
-  if (shouldGoBack) history.back();
-}
+function closeBadgePage() { const o = $('badge-page'); if (o) o.classList.remove('open'); }
 function renderBadgePage() {
   const body = $('badge-page-body'); if (!body) return;
   const unlocked = badgeStore.get();
@@ -1220,8 +1166,6 @@ function weeklyData() {
 }
 
 /* 把当天已完成任务同步回 state（刷新 / 跨天都正确） */
-
-
 /* 成长积分历史：积分按日期保存，不再只展示近 7 天；历史页提供近四年按月回看。 */
 const GROWTH_HISTORY_YEARS = 4;
 let growthMonthKey = monthKey(new Date());
@@ -1303,6 +1247,7 @@ function renderGrowthHistory() {
   details.innerHTML = active.length ? active.slice().reverse().map(item => `<div class="history-detail"><div><div class="date">${item.date.getMonth() + 1} 月 ${item.day} 日</div><div class="modules">${item.mods.length ? item.mods.join(' · ') : '成长任务'}</div></div><div class="points">+${item.points} 分</div></div>`).join('') : `<div class="history-empty">这个月还没有积分记录。完成一个成长任务，明天就能在这里看到 ✨</div>`;
 }
 
+
 function syncTasksFromStore() {
   const saved = taskStore.get();
   const today = todayKey();
@@ -1329,22 +1274,10 @@ function toast(msg) {
 }
 
 function go(tab) {
-  const active = $('screen-' + tab);
-  if (!active) return;
-  document.querySelectorAll('.screen').forEach(screen => {
-    const on = screen === active;
-    screen.classList.toggle('active', on);
-    // Keep the selected screen visible even in WebViews that cache a CSS transition
-    // while switching absolute layers. This prevents an interactive-but-transparent page.
-    screen.style.display = on ? 'block' : 'none';
-    screen.style.opacity = '1';
-    screen.style.transform = 'none';
-    screen.style.visibility = on ? 'visible' : 'hidden';
-    screen.style.zIndex = on ? '1' : '0';
-  });
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  const tabButton = document.querySelector(`.tab[data-tab="${tab}"]`);
-  if (tabButton) tabButton.classList.add('active');
+  $('screen-' + tab).classList.add('active');
+  document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
   if (tab === 'data') renderCharts();
 }
 
@@ -1888,15 +1821,12 @@ function askQuick(txt) {
   sendMsg();
 }
 
-function openChat(options = {}) {
+function openChat() {
   $('chat-overlay').classList.add('open');
-  if (options.pushHistory !== false) pushOverlayHistory('overlay', 'chat', overlayHistoryUrl('chat'));
   setTimeout(() => $('chat-input').focus(), 250);
 }
-function closeChat(options = {}) {
-  const shouldGoBack = !options.fromHistory && history.state && history.state.sgOverlay === 'chat';
+function closeChat() {
   $('chat-overlay').classList.remove('open');
-  if (shouldGoBack) history.back();
 }
 
 /* =========================================================================
@@ -1931,7 +1861,7 @@ function privacyPolicyHtml() {
   <h4>6. 你的权利</h4><p>你可查看本政策、导出本机成长数据和服务端账号信息、关闭 AI 内容处理、清除本机成长数据，或删除邮箱账号。删除账号不会自动删除本机成长数据，后者需单独清理。</p>
   <h4>7. 更新与联系</h4><p>处理目的、范围或第三方服务发生实质变化时，本政策会更新版本并再次征求同意。正式运营前请补充数据保护联系人和投诉渠道。</p></div>`;
 }
-function openPrivacyPolicy(fromConsent) { privacyPolicyReviewing = Boolean(fromConsent && !hasPrivacyConsent()); privacyReturnToAuth = !privacyPolicyReviewing && $('auth-overlay').classList.contains('open'); if (privacyPolicyReviewing) closePrivacyConsent(); if (privacyReturnToAuth) closeAuth({ fromHistory: true }); openPanel('隐私政策', '请仔细阅读后自主决定是否同意', '📄', privacyPolicyHtml()); }
+function openPrivacyPolicy(fromConsent) { privacyPolicyReviewing = Boolean(fromConsent && !hasPrivacyConsent()); privacyReturnToAuth = !privacyPolicyReviewing && $('auth-overlay').classList.contains('open'); if (privacyPolicyReviewing) closePrivacyConsent(); if (privacyReturnToAuth) closeAuth(); openPanel('隐私政策', '请仔细阅读后自主决定是否同意', '📄', privacyPolicyHtml()); }
 function setAiContentProcessing(enabled) { toast('AI 内容处理始终开启，由服务端安全代理处理'); openPrivacyPanel(); }
 function currentUser() { try { return JSON.parse(localStorage.getItem('sg_user') || 'null'); } catch (e) { return null; } }
 function setCurrentUser(user) { try { localStorage.setItem('sg_user', JSON.stringify(user)); } catch (e) {} }
@@ -1947,8 +1877,8 @@ function applyUser() {
   const pl = $('profile-lv'); if (pl) pl.textContent = u ? (p ? p.role + ' · ' + p.years : '完成画像，定制成长内容') : '登录后保存你的成长身份';
   const li = $('auth-entry'); if (li) li.innerHTML = u ? '<span class="ico">🚪</span>退出登录<span class="arrow">›</span>' : '<span class="ico">🔐</span>邮箱登录 / 注册<span class="arrow">›</span>';
 }
-function openAuth(mode = 'login', options = {}) { if (ensurePrivacyConsent()) { setAuthMode(mode); $('auth-overlay').classList.add('open'); if (options.pushHistory !== false) pushOverlayHistory('overlay', 'auth', overlayHistoryUrl('auth')); setTimeout(() => (mode === 'verify' || mode === 'reset' ? $('auth-code') : $('auth-email')).focus(), 180); } }
-function closeAuth(options = {}) { const shouldGoBack = !options.fromHistory && history.state && history.state.sgOverlay === 'auth'; $('auth-overlay').classList.remove('open'); clearAuthError(); if (shouldGoBack) history.back(); }
+function openAuth(mode = 'login') { if (ensurePrivacyConsent()) { setAuthMode(mode); $('auth-overlay').classList.add('open'); setTimeout(() => (mode === 'verify' || mode === 'reset' ? $('auth-code') : $('auth-email')).focus(), 180); } }
+function closeAuth() { $('auth-overlay').classList.remove('open'); clearAuthError(); }
 function onAuthClick() { if (currentUser()) logout(); else openAuth(); }
 function setAuthMode(mode, options = {}) {
   authMode = ['register', 'verify', 'forgot', 'reset'].includes(mode) ? mode : 'login';
@@ -2054,16 +1984,15 @@ function checkOnboarding() {
 
 /* 画像选择态（onboarding 界面用） */
 let obRole = null, obYears = null, obGoals = [];
-function openOnboarding(options = {}) {
+function openOnboarding() {
   const p = getProfile();
   obRole = p ? p.role : null;
   obYears = p ? p.years : null;
   obGoals = p ? (p.goals || []) : [];
   renderOnboard();
   $('onboard-overlay').classList.add('open');
-  if (options.pushHistory !== false) pushOverlayHistory('overlay', 'onboard', overlayHistoryUrl('onboard'));
 }
-function closeOnboarding(options = {}) { const shouldGoBack = !options.fromHistory && history.state && history.state.sgOverlay === 'onboard'; $('onboard-overlay').classList.remove('open'); if (shouldGoBack) history.back(); }
+function closeOnboarding() { $('onboard-overlay').classList.remove('open'); }
 function pickRole(r) { obRole = r; renderOnboard(); }
 function pickYears(y) { obYears = y; renderOnboard(); }
 function pickGoal(g) {
@@ -2196,70 +2125,58 @@ function goTask(id) {
 }
 const MODULE_NAMES = ['discipline', 'cognition', 'speech', 'emotion'];
 let activeModuleName = null;
-let activePanelHistory = false;
-let activeBadgeHistory = false;
 function getOpenModuleElement() {
   return MODULE_NAMES.map(name => $('mod-' + name)).find(el => el && el.classList.contains('open')) || null;
 }
 function moduleHistoryUrl(name) {
   return location.pathname + location.search + '#sg-module-' + name;
 }
-function overlayHistoryUrl(name) {
-  return location.pathname + location.search + '#sg-overlay-' + name;
-}
-function pushOverlayHistory(type, name, url) {
-  const key = type === 'module' ? 'sgModule' : 'sgOverlay';
-  if (!history.state || history.state[key] !== name) history.pushState({ ...(history.state || {}), [key]: name }, '', url);
-}
 function openModule(name, options = {}) {
   if (!MODULE_NAMES.includes(name)) return;
-  MODULE_NAMES.forEach(moduleName => { const module = $('mod-' + moduleName); if (module) module.classList.remove('open'); });
-  const el = $('mod-' + name); if (!el) return;
-  activeModuleName = name; el.classList.add('open');
-  if (options.pushHistory !== false) pushOverlayHistory('module', name, moduleHistoryUrl(name));
+  MODULE_NAMES.forEach(moduleName => {
+    const module = $('mod-' + moduleName);
+    if (module) module.classList.remove('open');
+  });
+  const el = $('mod-' + name);
+  if (!el) return;
+  activeModuleName = name;
+  el.classList.add('open');
+  if (options.pushHistory !== false && (!history.state || history.state.sgModule !== name)) {
+    history.pushState({ ...(history.state || {}), sgModule: name }, '', moduleHistoryUrl(name));
+  }
   renderModule(name);
 }
 function closeModule(options = {}) {
   const shouldGoBack = !options.fromHistory && Boolean(activeModuleName) && history.state && history.state.sgModule === activeModuleName;
   stopFocus();
   if (twoMinTimer) { clearInterval(twoMinTimer); twoMinTimer = null; }
-  MODULE_NAMES.forEach(moduleName => { const module = $('mod-' + moduleName); if (module) module.classList.remove('open'); });
+  MODULE_NAMES.forEach(moduleName => {
+    const module = $('mod-' + moduleName);
+    if (module) module.classList.remove('open');
+  });
   activeModuleName = null;
   if (shouldGoBack) history.back();
 }
-function getOpenAppOverlay() {
-  if (getOpenModuleElement()) return getOpenModuleElement();
-  if ($('panel-overlay') && $('panel-overlay').classList.contains('open')) return $('panel-overlay');
-  if ($('badge-page') && $('badge-page').classList.contains('open')) return $('badge-page');
-  if ($('chat-overlay') && $('chat-overlay').classList.contains('open')) return $('chat-overlay');
-  if ($('auth-overlay') && $('auth-overlay').classList.contains('open')) return $('auth-overlay');
-  if ($('onboard-overlay') && $('onboard-overlay').classList.contains('open')) return $('onboard-overlay');
-  return null;
-}
-function closeOpenAppOverlay(options = {}) {
-  const overlay = getOpenAppOverlay(); if (!overlay) return;
-  if (overlay.id === 'panel-overlay') return closePanel(options);
-  if (overlay.id === 'badge-page') return closeBadgePage(options);
-  if (overlay.id === 'chat-overlay') return closeChat(options);
-  if (overlay.id === 'auth-overlay') return closeAuth(options);
-  if (overlay.id === 'onboard-overlay') return closeOnboarding(options);
-  return closeModule(options);
-}
-window.addEventListener('popstate', () => closeOpenAppOverlay({ fromHistory: true }));
-(function initAppOverlaySwipeBack() {
-  const EDGE_DISTANCE = 56, SWIPE_DISTANCE = 72;
+window.addEventListener('popstate', () => {
+  if (getOpenModuleElement()) closeModule({ fromHistory: true });
+});
+(function initModuleSwipeBack() {
+  const EDGE_DISTANCE = 56;
+  const SWIPE_DISTANCE = 72;
   let startX = 0, startY = 0, tracking = false;
   document.addEventListener('touchstart', event => {
-    if (!getOpenAppOverlay() || !event.touches || !event.touches[0]) return;
-    const touch = event.touches[0], width = window.innerWidth || document.documentElement.clientWidth;
-    if (touch.clientX > EDGE_DISTANCE && touch.clientX < width - EDGE_DISTANCE) return;
+    if (!getOpenModuleElement() || !event.touches || !event.touches[0]) return;
+    const touch = event.touches[0];
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+    if (touch.clientX > EDGE_DISTANCE && touch.clientX < viewportWidth - EDGE_DISTANCE) return;
     startX = touch.clientX; startY = touch.clientY; tracking = true;
   }, { passive: true });
   document.addEventListener('touchend', event => {
     if (!tracking || !event.changedTouches || !event.changedTouches[0]) return;
-    const touch = event.changedTouches[0], dx = touch.clientX - startX, dy = touch.clientY - startY;
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - startX, dy = touch.clientY - startY;
     tracking = false;
-    if (Math.abs(dx) >= SWIPE_DISTANCE && Math.abs(dx) > Math.abs(dy) * 1.2) closeOpenAppOverlay();
+    if (Math.abs(dx) >= SWIPE_DISTANCE && Math.abs(dx) > Math.abs(dy) * 1.2) closeModule();
   }, { passive: true });
   document.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
 })();
@@ -3277,17 +3194,8 @@ function openPanel(title, sub, ico, html) {
   const i = $('panel-ico'); if (i) i.textContent = ico || '📄';
   const b = $('panel-body'); if (b) b.innerHTML = html;
   const o = $('panel-overlay'); if (o) o.classList.add('open');
-  activePanelHistory = true;
-  pushOverlayHistory('overlay', 'panel', overlayHistoryUrl('panel'));
 }
-function closePanel(options = {}) {
-  const shouldGoBack = !options.fromHistory && activePanelHistory && history.state && history.state.sgOverlay === 'panel';
-  const o = $('panel-overlay'); if (o) o.classList.remove('open');
-  activePanelHistory = false;
-  if (shouldGoBack) history.back();
-  if (privacyPolicyReviewing && !hasPrivacyConsent()) { privacyPolicyReviewing = false; openPrivacyConsent(); }
-  if (privacyReturnToAuth && hasPrivacyConsent()) { privacyReturnToAuth = false; openAuth('login', { pushHistory: false }); }
-}
+function closePanel() { const o = $('panel-overlay'); if (o) o.classList.remove('open'); if (privacyPolicyReviewing && !hasPrivacyConsent()) { privacyPolicyReviewing = false; openPrivacyConsent(); } if (privacyReturnToAuth && hasPrivacyConsent()) { privacyReturnToAuth = false; openAuth(); } }
 
 function levelText(idx) {
   if (idx >= 90) return 'Lv.5 成长领航者';
