@@ -1,27 +1,26 @@
 ﻿<template>
   <view class="app-shell">
-    <view v-if="permissionState === 'requesting'" class="permission-tip">
-      {{ permissionText }}
+    <web-view
+    class="app-webview"
+    :src="currentUrl"
+    allow="microphone; autoplay"
+    :webview-styles="webviewStyles"
+    :update-title="true"
+    @error="handleWebViewError"
+  />
+  <view v-if="permissionState === 'requesting'" class="permission-overlay">
+    <view class="permission-card">
+      <text class="permission-title">正在准备拾光成长</text>
+      <text class="permission-copy">首次启动正在申请口才训练所需的麦克风权限，页面马上就绪。</text>
     </view>
-    <view v-else-if="permissionState === 'denied'" class="permission-tip">
-      <text>{{ deniedText }}</text>
+  </view>
+  <view v-else-if="permissionState === 'denied'" class="permission-overlay">
+    <view class="permission-card">
+      <text class="permission-title">需要麦克风权限</text>
+      <text class="permission-copy">只有使用口才训练时才会录音，授权后即可继续使用。</text>
       <button class="permission-button" @click="requestAudioPermission">{{ retryText }}</button>
     </view>
-    <view v-else-if="loadState === 'fallback'" class="fallback-screen">
-      <view class="fallback-logo">🌅</view>
-      <text class="fallback-title">拾光成长</text>
-      <text class="fallback-subtitle">网络暂时不可用，已切换到本机页面</text>
-      <button class="fallback-button" @click="retryRemote">重新连接</button>
-    </view>
-    <web-view
-      v-else
-      class="app-webview"
-      :src="currentUrl"
-      allow="microphone; autoplay"
-      :webview-styles="webviewStyles"
-      :update-title="true"
-      @error="handleWebViewError"
-    />
+  </view>
   </view>
 </template>
 
@@ -122,7 +121,7 @@ export default {
         return candidates.reverse().find((view) => {
           try {
             const url = typeof view.getURL === 'function' ? view.getURL() : '';
-            return url && !url.startsWith('file://') && !url.startsWith('about:blank');
+            return url && !url.startsWith('about:blank');
           } catch (error) { return false; }
         }) || null;
       } catch (error) { return null; }
@@ -164,8 +163,22 @@ export default {
 </script>
 
 <style>
-page,
+page {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
+  background: #f5f6f8;
+}
+
 .app-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   width: 100%;
   height: 100%;
   min-height: 100vh;
@@ -173,6 +186,8 @@ page,
 }
 
 .app-webview {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
@@ -180,30 +195,32 @@ page,
   background: #f5f6f8;
 }
 
-.permission-tip,
-.fallback-screen {
+.permission-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   box-sizing: border-box;
+  padding: 48rpx;
+  background: rgba(245, 246, 248, .94);
+}
+
+.permission-card {
   width: 100%;
-  height: 100%;
-  min-height: 100vh;
-  padding: 120rpx 48rpx;
+  max-width: 620rpx;
+  padding: 52rpx 42rpx;
+  box-sizing: border-box;
+  border-radius: 28rpx;
   color: #1a1d21;
   text-align: center;
-  background: #f5f6f8;
+  background: #ffffff;
+  box-shadow: 0 20rpx 60rpx rgba(20, 24, 40, .14);
 }
 
-.fallback-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48rpx; }
-.fallback-logo { font-size: 88rpx; margin-bottom: 24rpx; }
-.fallback-title { font-size: 40rpx; font-weight: 800; }
-.fallback-subtitle { display: block; margin-top: 18rpx; color: #6b7280; font-size: 26rpx; }
-.fallback-button,
-.permission-button {
-  width: 80%;
-  margin: 40rpx auto;
-  color: #ffffff;
-  background: #4f46e5;
-  border-radius: 18rpx;
-}
+.permission-title { display: block; font-size: 36rpx; font-weight: 800; }
+.permission-copy { display: block; margin-top: 22rpx; color: #6b7280; font-size: 26rpx; line-height: 1.7; }
+.permission-button { width: 80%; margin: 40rpx auto 0; color: #ffffff; background: #4f46e5; border-radius: 18rpx; }
 </style>
-
 
