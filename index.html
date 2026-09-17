@@ -16,13 +16,28 @@
       function setSafeAreaVars() {
         var root = document.documentElement;
         var statusBarH = 0;
+        var viewportDelta = 0;
+
         try {
           if (typeof plus !== 'undefined' && plus.navigator && plus.navigator.getStatusbarHeight) {
             statusBarH = Number(plus.navigator.getStatusbarHeight()) || 0;
           }
         } catch (e) {}
 
-        root.style.setProperty('--safe-top', (statusBarH > 0 ? statusBarH + 'px' : 'env(safe-area-inset-top, 0px)'));
+        try {
+          viewportDelta = Number(window.outerHeight) > 0 && Number(window.innerHeight) > 0
+            ? Number(window.outerHeight) - Number(window.innerHeight)
+            : 0;
+        } catch (e) {
+          viewportDelta = 0;
+        }
+
+        // 兼容 Vivo / 其它 OEM WebView：部分机型不可靠返回 0，或者 env() 不生效。
+        // 真实状态栏高度通常在 20~40px 左右，因此给定 24px 的兜底值，确保内容不再被挡住。
+        var resolvedTop = Math.max(statusBarH, viewportDelta, 24);
+        var safeTop = isFinite(resolvedTop) ? resolvedTop + 'px' : 'env(safe-area-inset-top, 0px)';
+
+        root.style.setProperty('--safe-top', safeTop);
         root.style.setProperty('--safe-right', 'env(safe-area-inset-right, 0px)');
         root.style.setProperty('--safe-bottom', 'env(safe-area-inset-bottom, 0px)');
         root.style.setProperty('--safe-left', 'env(safe-area-inset-left, 0px)');
