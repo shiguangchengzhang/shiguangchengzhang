@@ -1,0 +1,75 @@
+{
+  "tool": "sealos-log-scan",
+  "generatedAt": "2026-08-20T03:28:17.104Z",
+  "namespace": "ns-mibwfw7j",
+  "app": "shiguangchengzhang-rbtwyjux",
+  "since": "10m",
+  "tail": 300,
+  "minWindowSeconds": 60,
+  "baseline": {
+    "provided": false,
+    "generatedAt": null,
+    "elapsedSeconds": null,
+    "complete": false
+  },
+  "ok": true,
+  "dryRun": false,
+  "pods": [
+    {
+      "uid": "ea59ce87-b5f6-4051-a991-40dee9f277f7",
+      "name": "shiguangchengzhang-rbtwyjux-667bf7cd66-5mg2n",
+      "phase": "Running",
+      "ready": true,
+      "completed": false,
+      "failed": false,
+      "lifecycle": "Running",
+      "ownerKind": null,
+      "readyTransitionTime": "2026-08-20T03:20:37Z",
+      "restartCount": 0,
+      "restartDelta": 0,
+      "replaced": false,
+      "readyTransitionChanged": false,
+      "labels": {
+        "app": "shiguangchengzhang-rbtwyjux",
+        "pod-template-hash": "667bf7cd66"
+      },
+      "containers": [
+        {
+          "name": "shiguangchengzhang-rbtwyjux",
+          "type": "main",
+          "ready": true,
+          "restartCount": 0,
+          "state": {
+            "running": {
+              "startedAt": "2026-08-20T03:20:25Z"
+            }
+          },
+          "lastState": {},
+          "completionTime": null,
+          "exitCode": null,
+          "terminationReason": null,
+          "historicalCompletedInit": false,
+          "statusSignals": [],
+          "streams": [
+            {
+              "name": "current",
+              "ok": true,
+              "lineCount": 1,
+              "signals": [],
+              "error": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [],
+  "eventSummary": {
+    "observed": 0,
+    "historical-transient": 0,
+    "active-failure": 0
+  },
+  "findings": [],
+  "observations": [],
+  "errors": []
+}

@@ -1,0 +1,249 @@
+name: Deploy to Sealos
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sealos-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: hhnhhw/shiguangchengzhang
+  SEALOS_NAMESPACE: ns-8zpzccfm
+  SEALOS_APP: shiguangchengzhang-ouwyqxcl
+  APP_URL: https://shiguangchengzhang-fxaethpl.sealosbja.site
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Configure Sealos kubeconfig
+        shell: bash
+        env:
+          SEALOS_KUBECONFIG_B64: ${{ secrets.SEALOS_KUBECONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$SEALOS_KUBECONFIG_B64"
+          mkdir -p "$RUNNER_TEMP/sealos"
+          printf '%s' "$SEALOS_KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/sealos/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/sealos/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/sealos/kubeconfig"
+          test "$(kubectl --insecure-skip-tls-verify config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = "$SEALOS_NAMESPACE"
+          echo "KUBECONFIG=$RUNNER_TEMP/sealos/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Validate Sealos kubeconfig access
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking Kubernetes API access in namespace $SEALOS_NAMESPACE"
+          kubectl --insecure-skip-tls-verify \
+            --request-timeout=20s \
+            -n "$SEALOS_NAMESPACE" get --raw=/version >/dev/null
+          can_get_deployments=$(kubectl --insecure-skip-tls-verify \
+            --request-timeout=20s \
+            auth can-i get deployments -n "$SEALOS_NAMESPACE")
+          if [ "$can_get_deployments" != "yes" ]; then
+            echo "Kubernetes credentials are invalid or lack permission to get deployments in $SEALOS_NAMESPACE (auth can-i: $can_get_deployments)." >&2
+            exit 1
+          fi
+
+      - name: Discover current Sealos workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          selector="cloud.sealos.io/app-deploy-manager=$SEALOS_APP"
+          statefulset=""
+          deployment=""
+          if statefulset=$(kubectl --insecure-skip-tls-verify \
+              --request-timeout=20s \
+              -n "$SEALOS_NAMESPACE" get statefulset -l "$selector" \
+              -o jsonpath='{.items[0].metadata.name}'); then
+            :
+          else
+            statefulset=""
+          fi
+          if deployment=$(kubectl --insecure-skip-tls-verify \
+              --request-timeout=20s \
+              -n "$SEALOS_NAMESPACE" get deployment -l "$selector" \
+              -o jsonpath='{.items[0].metadata.name}'); then
+            :
+          else
+            deployment=""
+          fi
+          if [ -n "$statefulset" ] && [ -n "$deployment" ]; then
+            echo "Both StatefulSet and Deployment match $selector; refusing ambiguous rollout." >&2
+            exit 1
+          elif [ -n "$statefulset" ]; then
+            kind=statefulset
+            workload="$statefulset"
+          elif [ -n "$deployment" ]; then
+            kind=deployment
+            workload="$deployment"
+          else
+            echo "No StatefulSet or Deployment found for selector: $selector" >&2
+            echo "Resources currently visible in namespace $SEALOS_NAMESPACE:" >&2
+            kubectl --insecure-skip-tls-verify --request-timeout=20s \
+              -n "$SEALOS_NAMESPACE" get statefulset,deployment -o wide
+            exit 1
+          fi
+          container=$(kubectl --insecure-skip-tls-verify \
+            --request-timeout=20s \
+            -n "$SEALOS_NAMESPACE" get "$kind/$workload" \
+            -o jsonpath='{.spec.template.spec.containers[0].name}')
+          echo "SEALOS_KIND=$kind" >> "$GITHUB_ENV"
+          echo "SEALOS_WORKLOAD=$workload" >> "$GITHUB_ENV"
+          echo "SEALOS_CONTAINER=$container" >> "$GITHUB_ENV"
+          echo "Discovered $kind/$workload container $container"
+
+      - name: Ensure persistent auth volume is writable
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The image runs without root as UID/GID 10001. A newly mounted PVC is
+          # commonly root-owned, so attach fsGroup 10001 before writing users.json.
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            patch "$SEALOS_KIND/$SEALOS_WORKLOAD" --type=merge \
+            -p '{"spec":{"template":{"spec":{"securityContext":{"runAsUser":10001,"runAsGroup":10001,"fsGroup":10001,"fsGroupChangePolicy":"OnRootMismatch"}}}}}'
+      - name: Configure email authentication environment
+        shell: bash
+        env:
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: |
+          set -euo pipefail
+          test -n "$AUTH_SECRET"
+          test -n "$SMTP_USER"
+          test -n "$SMTP_PASS"
+          test -n "$SMTP_FROM"
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            set env "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            AUTH_SECRET="$AUTH_SECRET" \
+            AUTH_DATA_FILE=/app/data/users.json \
+            AUTH_COOKIE_SECURE=true \
+            AUTH_SESSION_DAYS=14 \
+            PRIVACY_POLICY_VERSION=2026-08-20 \
+            SMTP_HOST=smtp.qq.com \
+            SMTP_PORT=465 \
+            SMTP_SECURE=true \
+            SMTP_USER="$SMTP_USER" \
+            SMTP_PASS="$SMTP_PASS" \
+            SMTP_FROM="$SMTP_FROM" \
+            APP_BASE_URL="$APP_URL" \
+            EMAIL_VERIFY_TTL_MINUTES=10 \
+            PASSWORD_RESET_TTL_MINUTES=10
+
+      - name: Configure AI environment
+        shell: bash
+        env:
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_TEMPERATURE: ${{ secrets.AI_TEMPERATURE }}
+          AI_TIMEOUT_MS: ${{ secrets.AI_TIMEOUT_MS }}
+        run: |
+          set -euo pipefail
+          test -n "$AI_BASE_URL"
+          test -n "$AI_MODEL"
+          test -n "$AI_API_KEY"
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            set env "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            AI_BASE_URL="$AI_BASE_URL" \
+            AI_MODEL="$AI_MODEL" \
+            AI_API_KEY="$AI_API_KEY" \
+            AI_TEMPERATURE="${AI_TEMPERATURE:-0.7}" \
+            AI_TIMEOUT_MS="${AI_TIMEOUT_MS:-20000}"
+
+      - name: Roll out the new image
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            set image "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            "$SEALOS_CONTAINER=$IMAGE_NAME:$GITHUB_SHA"
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            rollout status "$SEALOS_KIND/$SEALOS_WORKLOAD" --timeout=180s
+          kubectl --insecure-skip-tls-verify -n "$SEALOS_NAMESPACE" \
+            get "$SEALOS_KIND/$SEALOS_WORKLOAD" \
+            -o jsonpath='{.status.readyReplicas}/{.status.replicas}'
+          echo
+
+      - name: Verify public AI smoke test
+        shell: bash
+        env:
+          APP_URL: ${{ env.APP_URL }}
+        run: |
+          set -euo pipefail
+          body='{"message":"deployment smoke test: reply with one short sentence"}'
+          last_code="000"
+          for attempt in {1..12}; do
+            last_code=$(curl --silent --show-error --connect-timeout 10 --max-time 60 --output /tmp/ai.json --write-out '%{http_code}' \
+              -H 'Content-Type: application/json' \
+              --data "$body" "$APP_URL/api/ai/chat" || true)
+            echo "AI smoke attempt $attempt/12 returned HTTP $last_code"
+            cat /tmp/ai.json 2>/dev/null || true
+            if [ "$last_code" = "200" ] && grep -q '"source":"provider"' /tmp/ai.json; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 12 ]; then
+              sleep 5
+            fi
+          done
+          echo "Public AI smoke test failed after retries (last HTTP $last_code)" >&2
+          echo "Health response:" >&2
+          curl --silent --show-error --connect-timeout 10 --max-time 30 "$APP_URL/api/health" >&2 || true
+          exit 1
+
+      - name: Verify the public app
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            code=$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output /tmp/health.json --write-out '%{http_code}' "$APP_URL/api/health" || true)
+            if [ "$code" = "200" ] && grep -q '"ok":true' /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            echo "Health check attempt $attempt/12 returned HTTP $code"
+            sleep 5
+          done
+          echo "Health check failed" >&2
+          cat /tmp/health.json 2>/dev/null || true
+          exit 1
