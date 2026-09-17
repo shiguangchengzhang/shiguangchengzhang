@@ -10,7 +10,28 @@
   (function () {
     var ua = navigator.userAgent || '';
     var inApp = /Html5Plus|uni-app|HBuilder/i.test(ua) || typeof plus !== 'undefined';
-    if (inApp) document.documentElement.classList.add('in-app');
+    if (inApp) {
+      document.documentElement.classList.add('in-app');
+
+      function setSafeAreaVars() {
+        var root = document.documentElement;
+        var statusBarH = 0;
+        try {
+          if (typeof plus !== 'undefined' && plus.navigator && plus.navigator.getStatusbarHeight) {
+            statusBarH = Number(plus.navigator.getStatusbarHeight()) || 0;
+          }
+        } catch (e) {}
+
+        root.style.setProperty('--safe-top', (statusBarH > 0 ? statusBarH + 'px' : 'env(safe-area-inset-top, 0px)'));
+        root.style.setProperty('--safe-right', 'env(safe-area-inset-right, 0px)');
+        root.style.setProperty('--safe-bottom', 'env(safe-area-inset-bottom, 0px)');
+        root.style.setProperty('--safe-left', 'env(safe-area-inset-left, 0px)');
+      }
+
+      setSafeAreaVars();
+      window.addEventListener('resize', setSafeAreaVars, { passive: true });
+      window.addEventListener('orientationchange', setSafeAreaVars, { passive: true });
+    }
   })();
 </script>
 <style>
