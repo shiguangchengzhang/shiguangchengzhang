@@ -10,7 +10,41 @@
   (function () {
     var ua = navigator.userAgent || '';
     var inApp = /Html5Plus|uni-app|HBuilder/i.test(ua) || typeof plus !== 'undefined';
-    if (inApp) document.documentElement.classList.add('in-app');
+    if (inApp) {
+      document.documentElement.classList.add('in-app');
+
+      function setSafeAreaVars() {
+        var root = document.documentElement;
+        var statusBarH = 0;
+        var viewportDelta = 0;
+
+        try {
+          if (typeof plus !== 'undefined' && plus.navigator && plus.navigator.getStatusbarHeight) {
+            statusBarH = Number(plus.navigator.getStatusbarHeight()) || 0;
+          }
+        } catch (e) {}
+
+        try {
+          viewportDelta = Number(window.outerHeight) > 0 && Number(window.innerHeight) > 0
+            ? Number(window.outerHeight) - Number(window.innerHeight)
+            : 0;
+        } catch (e) {
+          viewportDelta = 0;
+        }
+
+        var resolvedTop = Math.max(statusBarH, viewportDelta, 24);
+        var safeTop = isFinite(resolvedTop) ? resolvedTop + 'px' : 'env(safe-area-inset-top, 0px)';
+
+        root.style.setProperty('--safe-top', safeTop);
+        root.style.setProperty('--safe-right', 'env(safe-area-inset-right, 0px)');
+        root.style.setProperty('--safe-bottom', 'env(safe-area-inset-bottom, 0px)');
+        root.style.setProperty('--safe-left', 'env(safe-area-inset-left, 0px)');
+      }
+
+      setSafeAreaVars();
+      window.addEventListener('resize', setSafeAreaVars, { passive: true });
+      window.addEventListener('orientationchange', setSafeAreaVars, { passive: true });
+    }
   })();
 </script>
 <style>
@@ -63,6 +97,12 @@
   }
 
   /* ---------- App 真机（HBuilderX WebView）下取消手机外框，铺满全屏 ---------- */
+  html.in-app {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+  }
   html.in-app, html.in-app body { height: 100%; background: var(--bg); }
   html.in-app body { min-height: 100vh; padding: 0; }
   html.in-app .phone {
@@ -70,6 +110,16 @@
     border-radius: 0; box-shadow: none;
   }
   /* 刘海屏 / 挖孔屏安全区：真机全屏 WebView 下，把假状态栏往下让出刘海边 */
+  html.in-app .screen {
+    padding-top: calc(8px + var(--safe-top));
+    padding-left: calc(18px + var(--safe-left));
+    padding-right: calc(18px + var(--safe-right));
+  }
+  html.in-app .tabbar {
+    left: calc(14px + var(--safe-left));
+    right: calc(14px + var(--safe-right));
+    bottom: calc(14px + var(--safe-bottom));
+  }
   .screens { flex: 1; position: relative; overflow: hidden; }
   .screen {
     position: absolute; inset: 0;
@@ -424,6 +474,9 @@
   .mod-head {
     flex: 0 0 auto; color: #fff; padding: 14px 16px 16px;
     display: flex; align-items: center; gap: 11px;
+  }
+  html.in-app .module-overlay .mod-head {
+    padding-top: calc(14px + var(--safe-top));
   }
   .mod-head .back { cursor: pointer; font-size: 22px; line-height: 1; background: none; border: none; color: #fff; }
   .mod-head .m-ico { width: 38px; height: 38px; border-radius: 12px; background: rgba(255,255,255,.22); display: flex; align-items: center; justify-content: center; font-size: 19px; flex: 0 0 38px; }
